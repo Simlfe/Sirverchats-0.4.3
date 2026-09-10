@@ -1,0 +1,11 @@
+{
+  "name": "Sirverchats-0.4.3",
+  "description": "Sirver cross-platform chat application with real-time direct calls, audio/video channels, admin theme management, and rich messaging",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

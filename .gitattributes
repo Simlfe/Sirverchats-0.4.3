@@ -1,0 +1,19 @@
+# Auto-detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Force binary handling for binary files to prevent line-ending corruption
+*.jar binary
+*.zip binary
+*.aar binary
+*.so binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.exe binary
+*.msi binary
+*.AppImage binary
+*.deb binary
+*.pdf binary

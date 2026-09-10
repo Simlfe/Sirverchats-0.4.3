@@ -1,0 +1,72 @@
+# Maintainer: SirverData <support@sirverdata.top>
+pkgname=sirverdata
+pkgver=0.3.8
+pkgrel=1
+pkgdesc="SirverData Modern Real-time Chat and Workspace Collaboration Platform"
+arch=('x86_64')
+url="https://sirverdata.top"
+license=('MIT')
+depends=(
+    'webkit2gtk-4.1'
+    'gtk3'
+    'openssl'
+    'cairo'
+    'gdk-pixbuf2'
+    'pango'
+    'libayatana-appindicator'
+    'libsoup3'
+    'gst-plugins-base'
+    'gst-plugins-good'
+    'gst-plugins-bad'
+    'gst-libav'
+    'gst-plugin-pipewire'
+)
+optdepends=(
+    'pipewire: Modern audio and video capture routing engine'
+    'pipewire-pulse: PulseAudio server layer for microphone and audio streams'
+    'wireplumber: Session manager for PipeWire multimedia devices'
+    'v4l-utils: Video4Linux device utilities for webcams'
+    'xdg-desktop-portal: Desktop integration for screensharing and camera permissions'
+)
+makedepends=(
+    'cargo'
+    'rust'
+    'nodejs'
+    'npm'
+)
+
+build() {
+    # If built directly inside repo root
+    local ROOT_DIR="${startdir}/.."
+    if [ ! -f "${ROOT_DIR}/package.json" ]; then
+        ROOT_DIR="${startdir}"
+    fi
+
+    cd "${ROOT_DIR}"
+    npm install
+    npm run build
+    npx tauri build --no-bundle
+}
+
+package() {
+    local ROOT_DIR="${startdir}/.."
+    if [ ! -f "${ROOT_DIR}/package.json" ]; then
+        ROOT_DIR="${startdir}"
+    fi
+
+    cd "${ROOT_DIR}"
+
+    # Install executable binary
+    install -Dm755 "src-tauri/target/release/sirverdata" "${pkgdir}/usr/bin/sirverdata"
+
+    # Install desktop launcher entry
+    install -Dm644 "arch/sirverdata.desktop" "${pkgdir}/usr/share/applications/sirverdata.desktop"
+
+    # Install hicolor icons
+    install -Dm644 "src-tauri/icons/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/sirverdata.png"
+    install -Dm644 "src-tauri/icons/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/sirverdata.png"
+    install -Dm644 "src-tauri/icons/128x128@2x.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/sirverdata.png"
+    if [ -f "src-tauri/icons/icon.png" ]; then
+        install -Dm644 "src-tauri/icons/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/sirverdata.png"
+    fi
+}

@@ -1,0 +1,949 @@
+@import url('https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&family=Almarai:wght@400;700;800&family=Cairo:wght@300;400;500;600;700;800&family=Cinzel+Decorative:wght@700;900&family=Cinzel:wght@500;700;900&family=DM+Sans:ital,opsz,wght@0,9..40,400..800&family=El+Messiri:wght@500;600;700&family=Fira+Code:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Lexend:wght@400;500;600;700&family=Nunito:wght@400;600;700;800;900&family=Orbitron:wght@500;700;900&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Poppins:wght@400;500;600;700&family=Readex+Pro:wght@400;500;600;700&family=Rubik:wght@400;500;600;700&family=Sora:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Syne:wght@500;700;800&family=Tajawal:wght@400;500;700;800&family=Urbanist:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-family, 'Plus Jakarta Sans', 'Cairo', 'Inter', ui-sans-serif, system-ui, sans-serif);
+  --font-mono: var(--font-family-chat, 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace);
+  --color-accent: var(--accent-color, #7BAE37);
+  --color-accent-contrast: var(--theme-accent-contrast, #000000);
+}
+
+/* Hide Chrome Cast / Remote Playback button on all video & audio elements */
+video::-internal-media-controls-cast-button,
+video::-webkit-media-controls-remote-playback-button,
+video::-webkit-media-controls-cast-button,
+video::-webkit-media-controls-overlay-cast-button,
+audio::-internal-media-controls-cast-button,
+audio::-webkit-media-controls-remote-playback-button,
+audio::-webkit-media-controls-cast-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Universal Typography & Font Rules - dynamic font cascade */
+*, *::before, *::after {
+  font-family: inherit;
+}
+
+.font-sans {
+  font-family: var(--font-family, 'Plus Jakarta Sans', 'Cairo', 'Inter', sans-serif) !important;
+}
+
+.font-headings {
+  font-family: var(--font-family-headings, var(--font-family)) !important;
+}
+
+.font-chat {
+  font-family: var(--font-family-chat, var(--font-family)) !important;
+}
+
+.font-cairo {
+  font-family: var(--font-family, 'Cairo', 'Inter', sans-serif);
+}
+
+.font-space {
+  font-family: var(--font-family-headings, 'Space Grotesk', 'Inter', sans-serif);
+}
+
+button, input, select, textarea, optgroup, option {
+  font-family: inherit;
+}
+
+:root {
+  --ui-scale: 1;
+  --font-family: 'Plus Jakarta Sans', 'Cairo', 'Inter', system-ui, sans-serif;
+  --font-family-headings: var(--font-family);
+  --font-family-chat: var(--font-family);
+  --base-font-size: 13px;
+  --profile-card-width: 380px;
+  --profile-card-height: 520px;
+  --profile-card-radius: 24px;
+  --profile-avatar-size: 72px;
+  --chat-message-spacing: 6px;
+  --chat-bubble-radius: 16px;
+  --chat-bubble-padding: 12px;
+  --sidebar-width: 240px;
+  --sidebar-icon-size: 18px;
+  --channel-row-height: 36px;
+  --channel-font-size: 12px;
+  --server-icon-size: 48px;
+  --titlebar-height: 48px;
+  --anim-duration: 250ms;
+  --anim-easing: ease-in-out;
+
+  --accent-color: #7BAE37;
+  --accent-color-rgb: 123, 174, 55;
+  --theme-accent-contrast: #000000;
+  --theme-accent-text: #000000;
+  --theme-bg-primary: #000000;
+  --theme-bg-secondary: #262630;
+  --theme-bg-tertiary: #323240;
+  --theme-bg-card: #22222B;
+  --theme-bg-popup: #2A2A36;
+  --theme-bg-dialog: #1A1A22;
+  --theme-titlebar-bg: #1E1E26;
+  --theme-channel-hover-bg: #363646;
+  --theme-channel-active-bg: #444458;
+  --theme-text-primary: #FAF8ED;
+  --theme-text-secondary: #A1A1AA;
+  --theme-text-muted: #71717A;
+  --theme-border: #3E3E50;
+  --theme-glass-bg: rgba(38, 38, 48, 0.90);
+  --theme-glass-border: #3E3E50;
+  --status-online: #22c55e;
+  --status-away: #f59e0b;
+  --status-dnd: #ef4444;
+  --status-offline: #71717A;
+  --theme-message-hover-bg: rgba(255, 255, 255, 0.04);
+  --gradient-primary: linear-gradient(135deg, #3E3E50 0%, #262630 100%);
+}
+
+/* Custom Themed Volume Range Slider */
+.themed-volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 150ms ease;
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.1));
+}
+
+.themed-volume-slider:focus-visible {
+  outline: 2px solid var(--accent-color, #7BAE37);
+  outline-offset: 2px;
+}
+
+/* WebKit Thumb */
+.themed-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--theme-text-primary, #ffffff);
+  border: 2px solid var(--accent-color, #7BAE37);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.themed-volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(123, 174, 55, 0.25);
+}
+
+/* Firefox Thumb */
+.themed-volume-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--theme-text-primary, #ffffff);
+  border: 2px solid var(--accent-color, #7BAE37);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.themed-volume-slider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(123, 174, 55, 0.25);
+}
+
+html, body {
+  font-family: var(--font-family, 'Plus Jakarta Sans', 'Cairo', 'Inter', system-ui, sans-serif);
+  font-size: var(--base-font-size, 13px);
+  letter-spacing: -0.01em;
+  word-spacing: normal;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--theme-bg-primary);
+  color: var(--theme-text-primary);
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden !important;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  -webkit-overscroll-behavior: none;
+  overscroll-behavior: none;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden !important;
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-family-headings, var(--font-family)), 'Cairo', 'Inter', sans-serif;
+}
+
+.chat-message-content {
+  font-family: var(--font-family-chat, var(--font-family)), 'Cairo', 'Inter', sans-serif;
+}
+
+.dark, [data-theme-mode="dark"] {
+  --accent-color: #FAF8ED;
+  --accent-color-rgb: 250, 248, 237;
+  --theme-accent-contrast: #000000;
+  --theme-accent-text: #000000;
+  --theme-bg-primary: #000000;
+  --theme-bg-secondary: #262630;
+  --theme-bg-tertiary: #323240;
+  --theme-bg-card: #22222B;
+  --theme-channel-hover-bg: #363646;
+  --theme-channel-active-bg: #444458;
+  --theme-text-primary: #FAF8ED;
+  --theme-text-secondary: #A1A1AA;
+  --theme-text-muted: #71717A;
+  --theme-border: rgba(255, 255, 255, 0.07);
+  --theme-separator: rgba(255, 255, 255, 0.04);
+  --theme-text-link: #FAF8ED;
+  --theme-btn-normal: #FAF8ED;
+  --theme-btn-hover: #EBE8D8;
+  --theme-btn-pressed: #DDD9C8;
+  --theme-input-focus: #FAF8ED;
+  --theme-role-color: #FAF8ED;
+  --theme-glass-bg: rgba(38, 38, 48, 0.90);
+  --theme-glass-border: rgba(255, 255, 255, 0.08);
+  --status-online: #22c55e;
+  --status-away: #f59e0b;
+  --status-dnd: #ef4444;
+  --status-offline: #71717A;
+  --theme-message-hover-bg: rgba(255, 255, 255, 0.04);
+  --gradient-primary: linear-gradient(135deg, #3E3E50 0%, #262630 100%);
+}
+
+.light, [data-theme-mode="light"] {
+  --accent-color: #18181B;
+  --accent-color-rgb: 24, 24, 27;
+  --theme-accent-contrast: #FFFFFF;
+  --theme-accent-text: #FFFFFF;
+  --theme-bg-primary: #FAF9F5;
+  --theme-bg-secondary: #F4F3EE;
+  --theme-bg-tertiary: #EBE9E1;
+  --theme-bg-card: #FFFFFF;
+  --theme-channel-hover-bg: #EAE8E0;
+  --theme-channel-active-bg: #DFDDD4;
+  --theme-text-primary: #1C1917;
+  --theme-text-secondary: #44403C;
+  --theme-text-muted: #78716C;
+  --theme-border: #E6E3DC;
+  --theme-separator: #EDEAE3;
+  --theme-text-link: #18181B;
+  --theme-btn-normal: #18181B;
+  --theme-btn-hover: #27272A;
+  --theme-btn-pressed: #3F3F46;
+  --theme-input-focus: #18181B;
+  --theme-role-color: #18181B;
+  --theme-glass-bg: rgba(244, 243, 238, 0.95);
+  --theme-glass-border: #E2DFD8;
+  --status-online: #16a34a;
+  --status-away: #d97706;
+  --status-dnd: #dc2626;
+  --status-offline: #78716c;
+  --theme-message-hover-bg: rgba(0, 0, 0, 0.03);
+  --gradient-primary: linear-gradient(135deg, #E2DFD8 0%, #F4F3EE 100%);
+}
+
+.app-message-item {
+  transition: background-color 150ms ease-in-out;
+}
+
+.app-message-item:hover {
+  background-color: var(--theme-message-hover-bg) !important;
+}
+
+.bg-accent {
+  background-color: var(--accent-color) !important;
+  color: var(--theme-accent-contrast, #000000) !important;
+}
+
+.bg-accent * {
+  color: inherit;
+}
+
+.bg-accent:hover {
+  filter: brightness(0.94);
+}
+
+.bg-accent:active,
+.bg-accent:focus-visible {
+  background-color: var(--accent-color) !important;
+  color: var(--theme-accent-contrast, #000000) !important;
+  filter: brightness(0.85);
+}
+
+.btn-primary, .btn-accent {
+  background-color: var(--accent-color) !important;
+  color: var(--theme-accent-contrast, #000000) !important;
+  border: none;
+  transition: all 0.15s ease-in-out;
+}
+
+.btn-primary *, .btn-accent * {
+  color: var(--theme-accent-contrast, #000000) !important;
+}
+
+.btn-primary:hover, .btn-accent:hover {
+  filter: brightness(0.92);
+}
+
+.btn-primary:active, .btn-accent:active,
+.btn-primary:focus-visible, .btn-accent:focus-visible {
+  filter: brightness(0.82);
+  background-color: var(--accent-color) !important;
+  color: var(--theme-accent-contrast, #000000) !important;
+}
+
+/* High Contrast Toggle Switch CSS Rules */
+.ui-toggle-switch {
+  width: 3rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  padding: 0.125rem;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  border-width: 1px;
+  border-style: solid;
+}
+
+.ui-toggle-switch.is-on,
+.ui-toggle-switch[data-state="on"] {
+  background-color: var(--accent-color) !important;
+  border-color: var(--accent-color) !important;
+}
+
+.ui-toggle-switch.is-off,
+.ui-toggle-switch[data-state="off"] {
+  background-color: var(--theme-bg-tertiary) !important;
+  border-color: var(--theme-border) !important;
+}
+
+.ui-toggle-switch.is-off:hover,
+.ui-toggle-switch[data-state="off"]:hover {
+  border-color: var(--theme-text-muted) !important;
+}
+
+.ui-toggle-thumb {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.ui-toggle-switch.is-on .ui-toggle-thumb,
+.ui-toggle-switch[data-state="on"] .ui-toggle-thumb {
+  transform: translateX(1.5rem);
+  background-color: var(--theme-accent-contrast, #000000) !important;
+}
+
+.ui-toggle-switch.is-off .ui-toggle-thumb,
+.ui-toggle-switch[data-state="off"] .ui-toggle-thumb {
+  transform: translateX(0);
+  background-color: var(--theme-text-secondary, #52525b) !important;
+}
+
+.ui-toggle-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bg-accent-subtle {
+  background-color: rgba(var(--accent-color-rgb), 0.15) !important;
+}
+
+.text-accent {
+  color: var(--accent-color) !important;
+}
+
+.border-accent {
+  border-color: var(--accent-color) !important;
+}
+
+.bg-theme-primary {
+  background-color: var(--theme-bg-primary) !important;
+}
+
+.bg-theme-secondary {
+  background-color: var(--theme-bg-secondary) !important;
+}
+
+.bg-theme-tertiary {
+  background-color: var(--theme-bg-tertiary) !important;
+}
+
+.bg-theme-card {
+  background-color: var(--theme-bg-card) !important;
+}
+
+.text-theme-primary {
+  color: var(--theme-text-primary) !important;
+}
+
+.text-theme-secondary {
+  color: var(--theme-text-secondary) !important;
+}
+
+.text-theme-muted {
+  color: var(--theme-text-muted) !important;
+}
+
+.border-theme {
+  border-color: var(--theme-border) !important;
+}
+
+/* Material 3 Expressive & Fluent Soft Utilities */
+.glass-panel {
+  background: var(--theme-glass-bg);
+  border: 1px solid var(--theme-glass-border);
+}
+
+.dark .glass-panel, html[data-theme="obsidian"] .glass-panel, html[data-theme="slate"] .glass-panel {
+  background: var(--theme-glass-bg);
+  border: 1px solid var(--theme-glass-border);
+}
+
+.glass-card {
+  background: var(--theme-bg-card);
+  border: 1px solid var(--theme-border);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.2);
+}
+
+.avocado-glow {
+  box-shadow: 0 0 25px -5px var(--accent-glow);
+}
+
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spinSlow 12s linear infinite;
+}
+
+/* Animations support config */
+.anim-high .transition, .anim-high .transition-all, .anim-high .transition-colors, .anim-high .transition-opacity, .anim-high .transition-shadow, .anim-high .transition-transform {
+  transition-duration: 350ms !important;
+}
+
+.anim-med .transition, .anim-med .transition-all, .anim-med .transition-colors, .anim-med .transition-opacity, .anim-med .transition-shadow, .anim-med .transition-transform {
+  transition-duration: 200ms !important;
+}
+
+.anim-low .transition, .anim-low .transition-all, .anim-low .transition-colors, .anim-low .transition-opacity, .anim-low .transition-shadow, .anim-low .transition-transform {
+  transition-duration: 80ms !important;
+}
+
+.anim-none .transition, .anim-none .transition-all, .anim-none .transition-colors, .anim-none .transition-opacity, .anim-none .transition-shadow, .anim-none .transition-transform {
+  transition: none !important;
+}
+
+.anim-none * {
+  animation: none !important;
+}
+
+/* Global Unified Custom Scrollbar - Minimal Grabber Only */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--theme-border, rgba(255, 255, 255, 0.15));
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--theme-text-muted, rgba(255, 255, 255, 0.35));
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--theme-border, rgba(255, 255, 255, 0.15)) transparent;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none !important;
+}
+.scrollbar-none {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+.scrollbar-thin,
+.hover-scrollbar,
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--theme-border, rgba(255, 255, 255, 0.15)) transparent;
+}
+
+/* Font Size Settings & UI Scale */
+html[data-font-size="small"] {
+  font-size: calc(14px * var(--ui-scale, 1)) !important;
+}
+html[data-font-size="medium"], html:not([data-font-size]) {
+  font-size: calc(16px * var(--ui-scale, 1)) !important;
+}
+html[data-font-size="large"] {
+  font-size: calc(18px * var(--ui-scale, 1)) !important;
+}
+html[data-font-size="xlarge"] {
+  font-size: calc(20px * var(--ui-scale, 1)) !important;
+}
+
+/* Dynamic Font Size Classes for Chat Messages and App Text */
+html[data-font-size="small"] .app-chat-text {
+  font-size: 0.8125rem !important; /* 13px */
+}
+html[data-font-size="medium"] .app-chat-text, html:not([data-font-size]) .app-chat-text {
+  font-size: 0.9375rem !important; /* 15px */
+}
+html[data-font-size="large"] .app-chat-text {
+  font-size: 1.0625rem !important; /* 17px */
+}
+html[data-font-size="xlarge"] .app-chat-text {
+  font-size: 1.25rem !important; /* 20px */
+}
+
+/* Dynamic Message Density Classes - Compact is default */
+html[data-message-density="compact"] .app-message-item,
+html:not([data-message-density]) .app-message-item {
+  padding-top: 0.25rem !important;
+  padding-bottom: 0.25rem !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+  gap: 0.375rem !important;
+}
+html[data-message-density="compact"] .app-message-avatar,
+html[data-message-density="compact"] .app-message-gutter,
+html:not([data-message-density]) .app-message-avatar,
+html:not([data-message-density]) .app-message-gutter {
+  width: 2rem !important;
+  min-width: 2rem !important;
+}
+html[data-message-density="compact"] .app-message-avatar,
+html:not([data-message-density]) .app-message-avatar {
+  height: 2rem !important;
+  border-radius: 0.5rem !important;
+}
+html[data-message-density="compact"] .app-message-text,
+html:not([data-message-density]) .app-message-text {
+  font-size: 0.8125rem !important;
+  line-height: 1.25rem !important;
+}
+
+html[data-message-density="comfortable"] .app-message-item {
+  padding-top: 0.5rem !important;
+  padding-bottom: 0.5rem !important;
+  padding-left: 0.75rem !important;
+  padding-right: 0.75rem !important;
+  gap: 0.75rem !important;
+}
+html[data-message-density="comfortable"] .app-message-avatar,
+html[data-message-density="comfortable"] .app-message-gutter {
+  width: 2.5rem !important;
+  min-width: 2.5rem !important;
+}
+html[data-message-density="comfortable"] .app-message-avatar {
+  height: 2.5rem !important;
+}
+
+html[data-message-density="spacious"] .app-message-item {
+  padding-top: 0.875rem !important;
+  padding-bottom: 0.875rem !important;
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+  gap: 1rem !important;
+}
+html[data-message-density="spacious"] .app-message-avatar,
+html[data-message-density="spacious"] .app-message-gutter {
+  width: 2.75rem !important;
+  min-width: 2.75rem !important;
+}
+html[data-message-density="spacious"] .app-message-avatar {
+  height: 2.75rem !important;
+}
+html[data-message-density="spacious"] .app-message-text {
+  font-size: 1rem !important;
+  line-height: 1.625rem !important;
+}
+
+/* Edge-to-Edge Mobile Safe Area Support */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+.safe-area-pt {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.safe-area-inset {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* High Contrast UI Mode Implementation */
+.high-contrast {
+  --theme-bg-primary: #000000 !important;
+  --theme-bg-secondary: #050505 !important;
+  --theme-bg-tertiary: #121212 !important;
+  --theme-bg-card: #080808 !important;
+  --theme-text-primary: #FFFFFF !important;
+  --theme-text-secondary: #F4F4F5 !important;
+  --theme-text-muted: #E4E4E7 !important;
+  --theme-border: #A1A1AA !important;
+  --accent-color: #FFFFFF !important;
+}
+
+.high-contrast.light, .light.high-contrast {
+  --theme-bg-primary: #FFFFFF !important;
+  --theme-bg-secondary: #FAFAFA !important;
+  --theme-bg-tertiary: #F4F4F5 !important;
+  --theme-bg-card: #FFFFFF !important;
+  --theme-text-primary: #000000 !important;
+  --theme-text-secondary: #18181B !important;
+  --theme-text-muted: #27272A !important;
+  --theme-border: #000000 !important;
+  --accent-color: #000000 !important;
+}
+
+.high-contrast button,
+.high-contrast input,
+.high-contrast select,
+.high-contrast textarea,
+.high-contrast [role="button"],
+.high-contrast [role="tab"],
+.high-contrast [role="switch"] {
+  border-width: 2px !important;
+  border-style: solid !important;
+}
+
+.high-contrast *:focus-visible {
+  outline: 3px solid var(--accent-color) !important;
+  outline-offset: 2px !important;
+}
+
+/* Reduced Motion Mode Implementation */
+.reduced-motion *,
+.reduced-motion *::before,
+.reduced-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Complete Global Removal of Blur and Glassmorphism Backdrop Effects Across the App */
+*,
+*::before,
+*::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+[class*="backdrop-blur"],
+[class*="blur-"],
+.backdrop-blur-none,
+.backdrop-blur-xs,
+.backdrop-blur-sm,
+.backdrop-blur-md,
+.backdrop-blur-lg,
+.backdrop-blur-xl,
+.backdrop-blur-2xl,
+.backdrop-blur-3xl,
+.blur-none,
+.blur-sm,
+.blur,
+.blur-md,
+.blur-lg,
+.blur-xl,
+.blur-2xl,
+.blur-3xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+/* Ensure clean opaque/semi-opaque backgrounds for modal overlays without blur artifacts */
+.fixed.inset-0[class*="backdrop-blur"],
+.absolute.inset-0[class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Background Wallpaper Global Layer */
+#theme-wallpaper-layer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  pointer-events: none;
+  z-index: 0;
+  background-image: var(--theme-bg-image, none);
+  background-size: var(--theme-bg-image-fit, cover);
+  background-position: var(--theme-bg-image-pos, center center);
+  background-repeat: no-repeat;
+  opacity: var(--theme-bg-image-opacity, 0);
+  transform: translateZ(0);
+  transition: opacity 350ms cubic-bezier(0.4, 0, 0.2, 1), background-image 350ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#theme-wallpaper-layer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--theme-bg-image-overlay, transparent);
+  pointer-events: none;
+}
+
+/* When a wallpaper theme is active, remove opaque backgrounds from root structures */
+.has-theme-wallpaper,
+.has-theme-wallpaper body,
+.has-theme-wallpaper #root,
+.has-theme-wallpaper .app-root-container {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
+/* When wallpaper is active, let desktop app panels have translucent backgrounds so wallpaper is clearly visible */
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-primary)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-primary) 65%, transparent) !important;
+}
+
+.has-theme-wallpaper.light [class*="bg-[var(--theme-bg-primary)]"],
+[data-theme-mode="light"].has-theme-wallpaper [class*="bg-[var(--theme-bg-primary)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-primary) 50%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-secondary)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-secondary) 75%, transparent) !important;
+}
+
+.has-theme-wallpaper.light [class*="bg-[var(--theme-bg-secondary)]"],
+[data-theme-mode="light"].has-theme-wallpaper [class*="bg-[var(--theme-bg-secondary)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-secondary) 65%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-tertiary)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-tertiary) 80%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-chat)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-chat, var(--theme-bg-primary)) 65%, transparent) !important;
+}
+
+.has-theme-wallpaper.light [class*="bg-[var(--theme-bg-chat)]"],
+[data-theme-mode="light"].has-theme-wallpaper [class*="bg-[var(--theme-bg-chat)]"] {
+  background-color: color-mix(in srgb, var(--theme-bg-chat, var(--theme-bg-primary)) 50%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-titlebar-bg)]"] {
+  background-color: color-mix(in srgb, var(--theme-titlebar-bg, var(--theme-bg-secondary)) 75%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-server-list-bg)]"] {
+  background-color: color-mix(in srgb, var(--theme-server-list-bg, var(--theme-bg-secondary)) 78%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-channel-list-bg)]"] {
+  background-color: color-mix(in srgb, var(--theme-channel-list-bg, var(--theme-bg-secondary)) 80%, transparent) !important;
+}
+
+.has-theme-wallpaper [class*="bg-[var(--theme-member-list-bg)]"] {
+  background-color: color-mix(in srgb, var(--theme-member-list-bg, var(--theme-bg-secondary)) 80%, transparent) !important;
+}
+
+.has-theme-wallpaper .theme-wallpaper-tint {
+  background: var(--theme-bg-image-overlay, transparent);
+}
+
+/* ============================================================================
+   MOBILE & OVERLAY SOLID OPACITY RULES
+   Remove transparency for mobile side panels, drawers, popovers, dropdowns,
+   and modals so content underneath never bleeds through, while preserving
+   chat view and background wallpaper transparency.
+   ============================================================================ */
+
+/* 1. Mobile Sliding Drawers & Side Panels */
+@media (max-width: 767px) {
+  .mobile-drawer-panel,
+  [data-mobile-drawer],
+  .fixed.inset-y-0.w-\[78vw\],
+  .fixed.inset-y-0.w-\[50vw\],
+  .fixed.inset-y-0.md\:w-80,
+  .has-theme-wallpaper .mobile-drawer-panel,
+  .has-theme-wallpaper [data-mobile-drawer],
+  .has-theme-wallpaper .fixed.inset-y-0.w-\[78vw\],
+  .has-theme-wallpaper .fixed.inset-y-0.w-\[50vw\],
+  .has-theme-wallpaper .fixed.inset-y-0.md\:w-80 {
+    background-color: var(--theme-bg-secondary) !important;
+    opacity: 1 !important;
+  }
+
+  /* Inner elements inside mobile sliding drawers */
+  .mobile-drawer-panel,
+  .mobile-drawer-panel *,
+  [data-mobile-drawer],
+  [data-mobile-drawer] * {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .has-theme-wallpaper .mobile-drawer-panel [class*="bg-[var(--theme-bg-secondary)]"],
+  .has-theme-wallpaper [data-mobile-drawer] [class*="bg-[var(--theme-bg-secondary)]"] {
+    background-color: var(--theme-bg-secondary) !important;
+  }
+
+  .has-theme-wallpaper .mobile-drawer-panel [class*="bg-[var(--theme-bg-tertiary)]"],
+  .has-theme-wallpaper [data-mobile-drawer] [class*="bg-[var(--theme-bg-tertiary)]"] {
+    background-color: var(--theme-bg-tertiary) !important;
+  }
+
+  .has-theme-wallpaper .mobile-drawer-panel [class*="bg-[var(--theme-bg-card)]"],
+  .has-theme-wallpaper [data-mobile-drawer] [class*="bg-[var(--theme-bg-card)]"] {
+    background-color: var(--theme-bg-card) !important;
+  }
+}
+
+/* 2. Popovers, Dropdowns, Context Menus, and Floating Action Panels */
+.popover-menu-solid,
+.notifications-popover,
+.pinned-messages-popover,
+[role="menu"],
+[role="listbox"],
+.dropdown-menu,
+.context-menu,
+.has-theme-wallpaper .popover-menu-solid,
+.has-theme-wallpaper .notifications-popover,
+.has-theme-wallpaper .pinned-messages-popover,
+.has-theme-wallpaper [role="menu"],
+.has-theme-wallpaper [role="listbox"],
+.has-theme-wallpaper .dropdown-menu,
+.has-theme-wallpaper .context-menu,
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-popup)]"],
+.has-theme-wallpaper [class*="bg-[var(--theme-bg-dialog)]"] {
+  background-color: var(--theme-bg-dialog, var(--theme-bg-popup, var(--theme-bg-card))) !important;
+  opacity: 1 !important;
+}
+
+/* 3. Mobile Fullscreen / Center Modals & Dialogs */
+@media (max-width: 767px) {
+  [role="dialog"],
+  .modal-dialog-surface,
+  .has-theme-wallpaper [role="dialog"],
+  .has-theme-wallpaper .modal-dialog-surface,
+  .has-theme-wallpaper .fixed.inset-0[class*="bg-[var(--theme-bg-primary)]"],
+  .has-theme-wallpaper .fixed.inset-0[class*="bg-[var(--theme-bg-secondary)]"] {
+    background-color: var(--theme-bg-dialog, var(--theme-bg-secondary)) !important;
+    opacity: 1 !important;
+  }
+
+  .has-theme-wallpaper [role="dialog"] [class*="bg-[var(--theme-bg-secondary)]"] {
+    background-color: var(--theme-bg-secondary) !important;
+  }
+
+  .has-theme-wallpaper [role="dialog"] [class*="bg-[var(--theme-bg-tertiary)]"] {
+    background-color: var(--theme-bg-tertiary) !important;
+  }
+
+  .has-theme-wallpaper [role="dialog"] [class*="bg-[var(--theme-bg-primary)]"] {
+    background-color: var(--theme-bg-primary) !important;
+  }
+}
+
+/* 4. Chat Performance, Zero-CLS & Smooth Rendering Pipeline */
+.chat-scroll-container {
+  overflow-anchor: auto !important;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: auto;
+  will-change: scroll-position;
+}
+
+.chat-message-row {
+  /* Keep standard layout to ensure exact scroll height calculations during prepend */
+}
+
+.media-preview-container {
+  contain: layout paint;
+  aspect-ratio: attr(data-aspect-ratio, 16 / 9);
+  min-height: 120px;
+  background-color: var(--theme-bg-tertiary, rgba(255, 255, 255, 0.05));
+}
+
+/* Hardware-accelerated UI transitions */
+.gpu-layer {
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+
+
+
+
+

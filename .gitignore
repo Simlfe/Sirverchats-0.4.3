@@ -1,0 +1,27 @@
+# Node
+node_modules/
+dist/
+
+# Rust
+target/
+src-tauri/target/
+Cargo.lock
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/.gradle/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*

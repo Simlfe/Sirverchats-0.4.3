@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "notes": "SirverData v1.0: Official 1.0 release with native multi-platform support, double-check auto-updater, and safe auto-rollback.",
+  "pub_date": "2026-09-07T14:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "https://sirverdata.top/downloads/updates/windows-x86_64/latest.zip"
+    },
+    "linux-x86_64": {
+      "signature": "",
+      "url": "https://sirverdata.top/downloads/updates/linux-x86_64/latest.tar.gz"
+    }
+  }
+}

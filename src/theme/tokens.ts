@@ -1,0 +1,62 @@
+export const themeTokens = {
+  colors: {
+    accent: {
+      primary: 'var(--accent-color)',
+      hover: 'var(--accent-color)',
+      light: 'rgba(255, 255, 255, 0.15)',
+      glow: 'rgba(255, 255, 255, 0.25)',
+    },
+    status: {
+      online: 'var(--status-online, #22c55e)',
+      away: 'var(--status-away, #f59e0b)',
+      dnd: 'var(--status-dnd, #ef4444)',
+      offline: 'var(--status-offline, #71717a)',
+    },
+    gradient: {
+      primary: 'var(--gradient-primary)',
+    },
+    dark: {
+      bgPrimary: '#000000',
+      bgSecondary: '#262630',
+      bgTertiary: '#323240',
+      bgCard: '#22222B',
+      textPrimary: '#FAF8ED',
+      textSecondary: '#A1A1AA',
+      textMuted: '#71717A',
+      border: 'rgba(255, 255, 255, 0.08)',
+      glassBg: 'rgba(38, 38, 48, 0.90)',
+      glassBorder: 'rgba(255, 255, 255, 0.08)',
+    },
+    light: {
+      bgPrimary: '#FAF9F5',
+      bgSecondary: '#F4F3EE',
+      bgTertiary: '#EBE9E1',
+      bgCard: '#FFFFFF',
+      textPrimary: '#1C1917',
+      textSecondary: '#44403C',
+      textMuted: '#78716C',
+      border: '#E6E3DC',
+      glassBg: 'rgba(244, 243, 238, 0.95)',
+      glassBorder: '#E6E3DC',
+    },
+  },
+  typography: {
+    fontSans: 'Plus Jakarta Sans, system-ui, -apple-system, sans-serif',
+    fontMono: 'JetBrains Mono, monospace',
+  },
+  borderRadius: {
+    sm: '0.5rem',
+    md: '0.75rem',
+    lg: '1rem',
+    xl: '1.25rem',
+    '2xl': '1.5rem',
+    '3xl': '2rem',
+    full: '9999px',
+  },
+  shadows: {
+    sm: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+    md: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+    lg: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+    xl: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+  },
+};
