@@ -1,10 +1,29 @@
 # Sirver Application Changelog
 
 ## [0.4.3] - 2026-09-10
-### Feature: Top Bar Version Badge & App Version Alignment to 0.4.3
-- **Top Bar Version Badge (`src/components/TitleBar.tsx`, `src/App.tsx`)**:
-  - Replaced the static text `"v2 Desktop"` in the top bar's status pill with the dynamic version tag `v0.4.3`.
-  - Added an active pulsing status indicator alongside `v{version}` so administrators and users can immediately visually verify when a server update or Git deploy is live.
+### Fix: GitHub Actions CI/CD Pipeline & Live Web Shell Synchronization
+- **Live Web Page Loading Configuration (`capacitor.config.ts`, `android/app/src/main/assets/capacitor.config.json`)**:
+  - Configured `server.url = 'https://app.sirverdata.top'` and `cleartext = true` in Capacitor configuration, ensuring mobile APK builds act as native live web shells loading the hosted web application directly while preserving native plugins (notifications, status bar).
+- **Tauri Native Metadata Synchronization (`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `android/app/build.gradle`)**:
+  - Aligned desktop and mobile binary versions to `0.4.3`.
+  - Constrained Tauri bundle targets to explicit `['deb', 'appimage', 'nsis']`, eliminating failures on Linux runners caused by uninstalled `rpmbuild`.
+- **Linux CI/CD Workflow Hardening (`.github/workflows/build-linux.yml`)**:
+  - Added `libfuse2t64` / `libfuse2` and `squashfs-tools` to the system package installation, resolving the fatal `dlopen(): error loading libfuse.so.2` error during AppImage bundling on Ubuntu 24.04 runners.
+  - Added clean `npm install` (`rm -f package-lock.json`) and explicit `--bundles deb,appimage` build flags.
+- **Android CI/CD Workflow Hardening (`.github/workflows/build-android.yml`)**:
+  - Removed rigid pre-cached `gradle-version` override in `gradle/actions/setup-gradle@v4` to let the Gradle wrapper (`gradle-8.14.3-all.zip`) build the project natively.
+  - Added `rm -f package-lock.json` and resilient `sdkmanager --licenses` fallback.
+### Fix: PocketBase Realtime Users Subscription Error Mitigation
+- **Resilient Users Realtime Subscription (`src/pocketbase.ts`)**:
+  - Prevented premature subscription attempts before user authentication is verified (`!this.pb.authStore.isValid`).
+  - Added graceful fallback to individual user record subscription (`collection('users').subscribe(activeUserId)`) if collection-wide wildcard (`*`) subscription is rejected by PocketBase collection API rules (400/403 "Something went wrong").
+  - Silenced unhelpful warning logs that cluttered the application console.
+### Feature: Desktop-Only TitleBar & Bottom-Right Version Indicator
+- **Desktop-Only TitleBar (`src/components/TitleBar.tsx`)**:
+  - Bound TitleBar rendering strictly to `isTauriEnvironment()`, ensuring the top bar is completely hidden when accessed through web browsers or mobile web, while remaining active in native desktop applications for window controls.
+- **Bottom-Right Version Watermark (`src/App.tsx`)**:
+  - Positioned the application version indicator (`v0.4.3`) in the bottom-right corner of the viewport (`fixed bottom-1.5 right-2.5`).
+  - Rendered in discreet, borderless typography (`font-mono text-[11px] text-[var(--theme-text-muted)] opacity-50 pointer-events-none`) so it does not interfere with chat interactions or UI buttons.
 - **Application Version Synchronization**:
   - Aligned `CURRENT_APP_VERSION` to `0.4.3` in `src/services/updateService.ts`.
   - Updated `package.json`, `metadata.json`, `versions.json`, and `versions` static tracking assets to `0.4.3`.

@@ -1,6 +1,6 @@
 [package]
 name = "sirverdata"
-version = "1.0.0"
+version = "0.4.3"
 description = "SirverData Desktop Application"
 authors = ["SirverData"]
 edition = "2021"

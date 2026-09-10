@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Minus, Square, Copy, X, Shield, Search, Settings } from 'lucide-react';
 import {
-  isDesktopPlatform,
+  isTauriEnvironment,
   minimizeWindow,
   toggleMaximizeWindow,
   closeWindow,
@@ -10,11 +10,9 @@ import {
   saveWindowState,
   startWindowDragging
 } from '../lib/tauriDesktopService';
-import { CURRENT_APP_VERSION } from '../services/updateService';
 
 interface TitleBarProps {
   appName?: string;
-  version?: string;
   isLight?: boolean;
   lang?: 'en' | 'ar';
   onOpenSettings?: () => void;
@@ -24,7 +22,6 @@ interface TitleBarProps {
 
 function TitleBar({
   appName = 'SirverData',
-  version = CURRENT_APP_VERSION,
   isLight = false,
   lang = 'en',
   onOpenSettings,
@@ -32,10 +29,12 @@ function TitleBar({
   isConnected = true
 }: TitleBarProps) {
   const [isMaximized, setIsMaximized] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(true);
+  const [isDesktop, setIsDesktop] = useState(() => isTauriEnvironment());
 
   useEffect(() => {
-    setIsDesktop(isDesktopPlatform());
+    const isTauri = isTauriEnvironment();
+    setIsDesktop(isTauri);
+    if (!isTauri) return;
 
     restoreWindowState().then(() => {
       isWindowMaximized().then(setIsMaximized);
@@ -115,10 +114,10 @@ function TitleBar({
 
         <div
           className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full"
-          title={`Sirver v${version}${isConnected ? (lang === 'ar' ? ' • متصل' : ' • Connected') : ''}`}
+          title={isConnected ? (lang === 'ar' ? 'متصل' : 'Connected') : (lang === 'ar' ? 'غير متصل' : 'Disconnected')}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span>v{version}</span>
+          <span>{lang === 'ar' ? 'متصل' : 'Desktop'}</span>
         </div>
       </div>
 

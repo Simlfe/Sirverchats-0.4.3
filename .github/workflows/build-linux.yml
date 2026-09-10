@@ -33,7 +33,10 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            squashfs-tools || true
+          # Install libfuse for AppImage packaging (Ubuntu 22.04 and 24.04 compatibility)
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2 || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -49,7 +52,9 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install Frontend Dependencies
-        run: npm install
+        run: |
+          rm -f package-lock.json
+          npm install
 
       - name: Build Web Assets
         run: npm run build
@@ -60,10 +65,10 @@ jobs:
             echo "Signing key detected. Building signed Linux bundles..."
             export TAURI_SIGNING_PRIVATE_KEY="${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
             export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"
-            npx tauri build --ci
+            npx tauri build --ci --bundles deb,appimage
           else
             echo "No signing key secret detected. Building unsigned Linux packages (--no-sign)..."
-            npx tauri build --ci --no-sign
+            npx tauri build --ci --bundles deb,appimage --no-sign
           fi
 
       - name: Upload Linux Artifacts

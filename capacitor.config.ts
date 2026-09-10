@@ -5,6 +5,8 @@ const config: CapacitorConfig = {
   appName: 'SirverData Chat',
   webDir: 'dist',
   server: {
+    url: 'https://app.sirverdata.top',
+    cleartext: true,
     androidScheme: 'https'
   }
 };

@@ -3898,7 +3898,6 @@ export default function App() {
       >
       <TitleBar
         appName="SirverData"
-        version={CURRENT_APP_VERSION}
         isLight={effectiveTheme === 'light'}
         lang={lang}
         onOpenSettings={() => setShowSettings(true)}
@@ -4574,6 +4573,14 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
+
+      {/* Discreet Version Watermark in Bottom Right */}
+      <div
+        id="app-version-watermark"
+        className="fixed bottom-1.5 right-2.5 z-50 pointer-events-none select-none text-[11px] font-mono text-[var(--theme-text-muted)] opacity-50"
+      >
+        v{CURRENT_APP_VERSION}
       </div>
     </div>
     </>

@@ -5041,30 +5041,46 @@ class PocketBaseService {
 
   private setupUsersSubscription() {
     if (this.usersSubscribed || this.isDemo) return;
+
+    // Do not attempt to subscribe before user is authenticated
+    if (!this.pb.authStore.isValid && !this.pb.authStore.model?.id) {
+      return;
+    }
+
     this.usersSubscribed = true;
 
-    try {
-      this.pb.collection('users').subscribe('*', (e) => {
-        if (e?.record?.id && this.usersCache) {
-          const idx = this.usersCache.findIndex((u) => u.id === e.record.id);
-          if (idx >= 0) {
-            this.usersCache[idx] = mergeUserRecord(this.usersCache[idx], e.record as unknown as User);
-          } else {
-            this.usersCache.push(e.record as unknown as User);
-          }
+    const handleEvent = (e: any) => {
+      if (e?.record?.id && this.usersCache) {
+        const idx = this.usersCache.findIndex((u) => u.id === e.record.id);
+        if (idx >= 0) {
+          this.usersCache[idx] = mergeUserRecord(this.usersCache[idx], e.record as unknown as User);
+        } else {
+          this.usersCache.push(e.record as unknown as User);
         }
-        this.userListeners.forEach((callback) => {
-          try {
-            callback(e);
-          } catch (cbErr) {}
-        });
-      }).catch((err) => {
-        this.usersSubscribed = false;
-        console.warn('[REALTIME] Users subscribe error:', err);
+      }
+      this.userListeners.forEach((callback) => {
+        try {
+          callback(e);
+        } catch (cbErr) {}
       });
-    } catch (err) {
+    };
+
+    try {
+      // First attempt subscribing to all users ('*')
+      this.pb.collection('users').subscribe('*', handleEvent).catch(() => {
+        // If collection-wide subscribe is rejected by PocketBase API rules (e.g. 400/403 "Something went wrong"),
+        // gracefully fall back to subscribing to the current user's individual record
+        const activeUserId = this.pb.authStore.model?.id;
+        if (activeUserId) {
+          this.pb.collection('users').subscribe(activeUserId, handleEvent).catch(() => {
+            this.usersSubscribed = false;
+          });
+        } else {
+          this.usersSubscribed = false;
+        }
+      });
+    } catch {
       this.usersSubscribed = false;
-      console.warn('subscribeToUsers failed:', err);
     }
   }
 
