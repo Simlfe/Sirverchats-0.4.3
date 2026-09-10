@@ -30,6 +30,7 @@ import UserProfileModal, { AnchorRect } from './components/UserProfileModal';
 import NotificationToast, { ToastNotice } from './components/NotificationToast';
 import NotificationsPopover from './components/NotificationsPopover';
 import TitleBar from './components/TitleBar';
+import { CURRENT_APP_VERSION } from './services/updateService';
 import ResetPasswordScreen from './components/ResetPasswordScreen';
 import { setupWindowCloseRequestedListener, isTauriEnvironment, isMobilePlatform } from './lib/tauriDesktopService';
 import { GlobalMusicPlayer } from './components/MusicPlayer';
@@ -3897,6 +3898,7 @@ export default function App() {
       >
       <TitleBar
         appName="SirverData"
+        version={CURRENT_APP_VERSION}
         isLight={effectiveTheme === 'light'}
         lang={lang}
         onOpenSettings={() => setShowSettings(true)}

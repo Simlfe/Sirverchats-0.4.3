@@ -1,5 +1,14 @@
 # Sirver Application Changelog
 
+## [0.4.3] - 2026-09-10
+### Feature: Top Bar Version Badge & App Version Alignment to 0.4.3
+- **Top Bar Version Badge (`src/components/TitleBar.tsx`, `src/App.tsx`)**:
+  - Replaced the static text `"v2 Desktop"` in the top bar's status pill with the dynamic version tag `v0.4.3`.
+  - Added an active pulsing status indicator alongside `v{version}` so administrators and users can immediately visually verify when a server update or Git deploy is live.
+- **Application Version Synchronization**:
+  - Aligned `CURRENT_APP_VERSION` to `0.4.3` in `src/services/updateService.ts`.
+  - Updated `package.json`, `metadata.json`, `versions.json`, and `versions` static tracking assets to `0.4.3`.
+
 ## [4.60.76] - 2026-09-10
 ### Fix: Instant Empty DM Channel Presentation & Zero-Latency Empty State Caching
 - **Instant Empty Channel Reveal (`src/components/ChatPanel.tsx`)**:

@@ -10,9 +10,11 @@ import {
   saveWindowState,
   startWindowDragging
 } from '../lib/tauriDesktopService';
+import { CURRENT_APP_VERSION } from '../services/updateService';
 
 interface TitleBarProps {
   appName?: string;
+  version?: string;
   isLight?: boolean;
   lang?: 'en' | 'ar';
   onOpenSettings?: () => void;
@@ -22,6 +24,7 @@ interface TitleBarProps {
 
 function TitleBar({
   appName = 'SirverData',
+  version = CURRENT_APP_VERSION,
   isLight = false,
   lang = 'en',
   onOpenSettings,
@@ -110,9 +113,12 @@ function TitleBar({
 
         <div className="h-3 w-[1px] bg-slate-500/30 mx-1 hidden sm:block" />
 
-        <div className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+        <div
+          className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full"
+          title={`Sirver v${version}${isConnected ? (lang === 'ar' ? ' • متصل' : ' • Connected') : ''}`}
+        >
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span>{lang === 'ar' ? 'متصل' : 'v2 Desktop'}</span>
+          <span>v{version}</span>
         </div>
       </div>
 

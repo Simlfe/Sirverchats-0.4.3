@@ -4,7 +4,7 @@ import { getCachedUserSettings } from '../lib/userSettings';
 import { isTauriEnvironment } from '../lib/tauriDesktopService';
 import { downloadManager, DownloadItem, getBlobFromDB } from './downloadManager';
 
-export const CURRENT_APP_VERSION = '1.0';
+export const CURRENT_APP_VERSION = '0.4.3';
 
 /**
  * Standard version increment: When told to mark a new version, add 0.0.1 (patch bump)
