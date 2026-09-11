@@ -11,7 +11,7 @@ import {
   saveFileToTauriDisk,
   removeFileFromTauriDisk,
   checkFileExistsOnDisk
-} from '../lib/tauriDesktopService';
+} from '../lib/nativePlatform';
 
 export type DownloadStatus =
   | 'queued'

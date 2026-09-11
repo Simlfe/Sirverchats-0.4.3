@@ -39,7 +39,7 @@ import {
   setCustomDownloadDirSetting,
   ensureDownloadDirectoryExists,
   selectFolderWithNativeDialog
-} from '../lib/tauriDesktopService';
+} from '../lib/nativePlatform';
 
 interface DownloadsTabContentProps {
   lang: 'en' | 'ar';

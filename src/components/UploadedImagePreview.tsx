@@ -285,13 +285,6 @@ export function preloadUploadedImage(
       isObjectUrl: false,
     });
   }
-  // Prime browser network/image cache
-  if (typeof Image !== 'undefined') {
-    const img = new Image();
-    img.decoding = 'async';
-    img.referrerPolicy = 'no-referrer';
-    img.src = url;
-  }
   return processUploadedImagePreview(url, maxWidth, maxHeight);
 }
 
@@ -413,7 +406,7 @@ function UploadedImagePreviewComponent({
         ref={imgRef}
         src={previewSrc || src}
         alt={alt}
-        loading="eager"
+        loading="lazy"
         decoding="async"
         className={`${className} relative z-10 w-full h-full object-cover block transition-opacity duration-150 ease-out ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
         style={style}

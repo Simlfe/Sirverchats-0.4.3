@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Play, ExternalLink, Film, Video, X } from "lucide-react";
-import { openExternalUrl } from "../lib/tauriDesktopService";
+import { openExternalUrl } from "../lib/nativePlatform";
 import { MusicTrack } from "../types";
 import { SmartVideoPlayer } from "./MusicPlayer";
 
@@ -176,4 +176,3 @@ export const SmartVideoLinkPreview: React.FC<SmartVideoLinkPreviewProps> = React
     </div>
   );
 });
-

@@ -25,7 +25,7 @@ import { MusicTrack, DownloadedFileRecord } from '../types';
 import { toLatinNumerals } from '../lib/utils';
 import AttachmentDownloadControl from './AttachmentDownloadControl';
 import { extractCoverFromUrl } from '../lib/audioMetadata';
-import { openExternalUrl } from '../lib/tauriDesktopService';
+import { openExternalUrl } from '../lib/nativePlatform';
 
 interface AudioPlayerProps {
   src: string;
@@ -2283,4 +2283,3 @@ export const GlobalMusicPlayer: React.FC<{
     </div>
   );
 };
-

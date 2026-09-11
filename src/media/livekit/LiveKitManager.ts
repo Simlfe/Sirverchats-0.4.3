@@ -210,10 +210,13 @@ export class LiveKitManager {
 
     const defaultEndpoint = ENDPOINTS.LIVEKIT_TOKEN_ENDPOINT;
 
-    const isDifferentOrigin = typeof window !== 'undefined' && !window.location.origin.includes('chat.sirverdata.top');
-    const endpointsToTry = isDifferentOrigin
-      ? ['/livekit/token', defaultEndpoint]
-      : [defaultEndpoint, '/livekit/token'];
+    // Cloudflare Pages does not serve `/livekit/token`; trying that relative
+    // URL first creates a guaranteed 404 and adds a full network round trip
+    // before every call. Keep the Vite proxy for local development and use
+    // the VPS endpoint directly from the production web origin.
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+    const useRelativeProxy = Boolean((import.meta as any).env?.DEV) || hostname === 'chat.sirverdata.top' || hostname === 'localhost' || hostname === '127.0.0.1';
+    const endpointsToTry = useRelativeProxy ? ['/livekit/token', defaultEndpoint] : [defaultEndpoint];
 
     let lastError: Error | null = null;
 

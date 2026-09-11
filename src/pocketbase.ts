@@ -1,13 +1,14 @@
 import PocketBase from 'pocketbase';
 import { ResilientAuthStore, cleanupStorageQuota, safeLocalStorageGet, safeLocalStorageSet } from './lib/storageManager';
 import { parseReactions, toggleReactionInList } from './components/MessageReactions';
-import { User, Server, Channel, Message, Attachment, Call, ServerMember, Translation, NotificationItem, ServerRole, ServerOptionInvite, ChannelOptions, DownloadedFileRecord, AppUpdateRecord, ServerEmoji } from './types';
+import { User, Server, Channel, Message, MessageCursor, MessagePage, Attachment, Call, ServerMember, Translation, NotificationItem, ServerRole, ServerOptionInvite, ChannelOptions, DownloadedFileRecord, AppUpdateRecord, ServerEmoji } from './types';
 import { MessageDeletionService, DeleteMessageOptions } from './services/messageDeletionService';
 import { inferMimeType } from './services/attachmentProcessor';
 import { offlineCacheService } from './services/offlineCacheService';
 import wsService from './services/websocket';
 import ENDPOINTS from './config/endpoints';
 import APP_URLS from './config/urls';
+import { buildMessageCursorFilter, pageItemsChronological } from './lib/messagePagination';
 
 export function mergeUserRecord(existing: User | null | undefined, updated: Partial<User> | null | undefined): User {
   if (!existing && !updated) {
@@ -580,17 +581,12 @@ class PocketBaseService {
   private authStore: ResilientAuthStore;
   private serverUrl: string = APP_URLS.API_BASE_URL;
   private isDemo: boolean = false;
-  private voicePresencesSupported: boolean = false;
   private appSettingsAdminSupported: boolean = true;
   private demoListeners: Set<(event: any) => void> = new Set();
   private pinnedCache: Map<string, string[]> = new Map();
   private serverMembersCache: Map<string, Map<string, ServerMember>> = new Map();
   private negativeServerMembersCache: Set<string> = new Set();
   private serverRolesCache: Map<string, ServerRole[]> = new Map();
-  private lastVoiceSyncTimeByUser: Map<string, number> = new Map();
-  private lastVoiceSyncStateByUser: Map<string, string> = new Map();
-  private cachedVoicePresences: any[] | null = null;
-  private lastVoicePresencesFetchTime: number = 0;
   private usersCache: User[] | null = null;
   private usersMapCache: Map<string, User> = new Map();
   private pendingUserFetches: Map<string, Promise<User | null>> = new Map();
@@ -605,6 +601,32 @@ class PocketBaseService {
   private channelMetaCache: Map<string, { record: any; timestamp: number }> = new Map();
   private serverOwnerCache: Map<string, { owner: string; timestamp: number }> = new Map();
   private memberRoleCache: Map<string, { roles: string[]; timestamp: number }> = new Map();
+  private messagePageControllers: Map<string, AbortController> = new Map();
+  private messageAttachmentControllers: Map<string, AbortController> = new Map();
+
+  private messagePageRequestKey(kind: 'channel' | 'dm', conversationId: string): string {
+    return `message-page:${kind}:${conversationId}`;
+  }
+
+  cancelMessagePage(conversationId: string, kind: 'channel' | 'dm'): void {
+    if (!conversationId) return;
+    const key = this.messagePageRequestKey(kind, conversationId);
+    if (kind === 'dm') {
+      // A DM UI id (dm-user-* / dm-server-*) can resolve to a different
+      // PocketBase chat-server id while the request is in flight. Cancel all
+      // DM page work on a conversation switch rather than leaking that race.
+      for (const [controllerKey, controller] of this.messagePageControllers) {
+        if (controllerKey.startsWith('message-page:dm:')) controller.abort();
+      }
+      for (const [controllerKey, controller] of this.messageAttachmentControllers) {
+        if (controllerKey.startsWith('message-attachments:dm:')) controller.abort();
+      }
+      return;
+    }
+    this.messagePageControllers.get(key)?.abort();
+    const attachmentKey = `message-attachments:${kind}:${conversationId}`;
+    this.messageAttachmentControllers.get(attachmentKey)?.abort();
+  }
 
   getCachedPrivateChatServer(recipientId: string): any {
     if (!recipientId) return null;
@@ -728,6 +750,7 @@ class PocketBaseService {
           for (const u of parsed) {
             if (u?.id) this.usersMapCache.set(u.id, u);
           }
+          this.lastUsersFetch = Date.now();
           return parsed;
         }
       }
@@ -1050,8 +1073,8 @@ class PocketBaseService {
             String(retryErr?.message || retryErr).includes('QuotaExceededError')
           ) {
             cleanupStorageQuota();
-            if (this.pb.authStore.record) {
-              return this.pb.authStore.record as any as User;
+            if (this.pb.authStore.model) {
+              return this.pb.authStore.model as any as User;
             }
           }
         }
@@ -1063,8 +1086,8 @@ class PocketBaseService {
         String(err?.message || err).includes('QuotaExceededError')
       ) {
         cleanupStorageQuota();
-        if (this.pb.authStore.record) {
-          return this.pb.authStore.record as any as User;
+        if (this.pb.authStore.model) {
+          return this.pb.authStore.model as any as User;
         }
       }
 
@@ -1787,6 +1810,69 @@ class PocketBaseService {
 
   // --- FETCH & SEND MESSAGES ---
 
+  /**
+   * Cursor based history loader shared by public channels and DMs.
+   * PocketBase's total-count query is deliberately skipped: the extra row is
+   * enough to tell the client whether another request can return data.
+   */
+  async fetchMessagePage(
+    conversationId: string,
+    kind: 'channel' | 'dm',
+    limit: number = 30,
+    before?: MessageCursor,
+  ): Promise<MessagePage> {
+    if (this.isDemo) {
+      const demo = await this.fetchMessages(conversationId, 1, limit);
+      return {
+        items: demo.items,
+        nextCursor: null,
+        hasMore: false,
+      };
+    }
+
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const field = kind === 'dm' ? 'chat_server' : 'channel';
+    const filter = buildMessageCursorFilter(field, conversationId, before);
+    const requestKey = this.messagePageRequestKey(kind, conversationId);
+    this.messagePageControllers.get(requestKey)?.abort();
+    const controller = new AbortController();
+    this.messagePageControllers.set(requestKey, controller);
+
+    try {
+      const records = await this.pb.collection(kind === 'dm' ? 'private_messages' : 'messages').getList(1, safeLimit + 1, {
+        filter,
+        sort: '-created,-id',
+        expand: kind === 'dm' ? 'sender,reply_to' : 'sender,reply_to,attachments_via_message',
+        skipTotal: true,
+        requestKey: null,
+        signal: controller.signal,
+      });
+
+      const fetchedItems = records.items as any as Message[];
+      const remoteHasMore = fetchedItems.length > safeLimit;
+      const raw = fetchedItems.filter((message) => {
+        if (message.deleted || Boolean(message.deleted_at) || MessageDeletionService.isMessageDeleted(message.id)) return false;
+        return true;
+      });
+      const result = pageItemsChronological(raw, safeLimit);
+      return {
+        items: result.items,
+        nextCursor: result.nextCursor,
+        // Deleted/tombstoned records may consume the +1 probe row. Keep the
+        // remote-history flag based on the server response, never on the
+        // post-filter item count, so hidden rows cannot terminate scrolling.
+        hasMore: remoteHasMore || result.hasMore,
+      };
+    } catch (error) {
+      console.warn(`Failed to fetch ${kind} message page:`, error);
+      return { items: [], nextCursor: null, hasMore: true };
+    } finally {
+      if (this.messagePageControllers.get(requestKey) === controller) {
+        this.messagePageControllers.delete(requestKey);
+      }
+    }
+  }
+
   async fetchMessages(channelId: string, page: number = 1, perPage: number = 35, beforeCreated?: string, beforeId?: string): Promise<{ items: Message[]; totalPages: number; totalItems: number }> {
     if (this.isDemo) {
       // Return beautiful high-quality demo message list
@@ -1828,38 +1914,17 @@ class PocketBaseService {
     }
 
     try {
-      let filterExpr = `channel = "${channelId}"`;
-      if (beforeCreated) {
-        const formattedBefore = beforeCreated.includes('T') ? beforeCreated.replace('T', ' ') : beforeCreated;
-        filterExpr += ` && created < "${formattedBefore}"`;
-      }
-
-      const records = await this.pb.collection('messages').getList(page, perPage, {
-        filter: filterExpr,
-        sort: '-created', // Recent messages first!
-        expand: 'sender,reply_to,attachments(message)',
-        requestKey: null
-      });
-      
-      const rawItems = (records.items as any as Message[]);
-      const readyItems = rawItems.filter((m) => {
-        if (m.deleted || Boolean(m.deleted_at && m.deleted_at !== '') || MessageDeletionService.isMessageDeleted(m.id)) {
-          return false;
-        }
-        if (m.has_attachment) {
-          const atts = m.expand?.['attachments(message)'];
-          return Array.isArray(atts) && atts.length > 0;
-        }
-        return true;
-      });
-
-      // Reverse so inside this page they are chronological (oldest first)
-      const items = [...readyItems].reverse();
+      const result = await this.fetchMessagePage(
+        channelId,
+        'channel',
+        perPage,
+        beforeCreated ? { created: beforeCreated, id: beforeId || '\uffff' } : undefined,
+      );
       
       return {
-        items,
-        totalPages: records.totalPages,
-        totalItems: records.totalItems
+        items: result.items,
+        totalPages: result.hasMore ? 2 : 1,
+        totalItems: result.items.length + (result.hasMore ? 1 : 0)
       };
     } catch (err) {
       console.warn('Network error fetching messages, attempting offline cache fallback:', err);
@@ -1898,19 +1963,21 @@ class PocketBaseService {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const record = await this.pb.collection('messages').getOne(messageId, {
-          expand: 'sender,reply_to,reply_to.sender,attachments(message)'
+          expand: 'sender,reply_to,reply_to.sender,attachments_via_message'
         });
         return record as any as Message;
       } catch (err: any) {
         try {
           const pmRecord = await this.pb.collection('private_messages').getOne(messageId, {
-            expand: 'sender,user,private_attachments(message),attachments(message)'
+            expand: 'sender,user,private_attachments_via_message,attachments_via_message'
           });
-          const pubAtts = (pmRecord.expand as any)?.['attachments(message)'] || [];
-          const privAtts = (pmRecord.expand as any)?.['private_attachments(message)'] || [];
+          const pubAtts = (pmRecord.expand as any)?.['attachments_via_message'] || (pmRecord.expand as any)?.['attachments(message)'] || [];
+          const privAtts = (pmRecord.expand as any)?.['private_attachments_via_message'] || (pmRecord.expand as any)?.['private_attachments(message)'] || [];
           const combined = [...pubAtts, ...privAtts];
           if (combined.length > 0) {
             if (!pmRecord.expand) (pmRecord as any).expand = {};
+            (pmRecord.expand as any)['attachments_via_message'] = combined;
+            (pmRecord.expand as any)['private_attachments_via_message'] = combined;
             (pmRecord.expand as any)['attachments(message)'] = combined;
             (pmRecord.expand as any)['private_attachments(message)'] = combined;
           }
@@ -1942,31 +2009,6 @@ class PocketBaseService {
       } catch (e) {
         console.warn('Failed to touch message:', e);
       }
-    }
-  }
-
-  async fetchServerMessages(serverId: string): Promise<Message[]> {
-    if (this.isDemo) {
-      return [];
-    }
-    try {
-      const records = await this.pb.collection('messages').getList(1, 100, {
-        filter: `channel.server = "${serverId}"`,
-        expand: 'sender,reply_to,attachments(message)',
-        sort: '-created',
-        requestKey: null
-      });
-      const rawItems = (records.items as any as Message[]);
-      return rawItems.filter((m) => {
-        if (m.has_attachment) {
-          const atts = m.expand?.['attachments(message)'];
-          return Array.isArray(atts) && atts.length > 0;
-        }
-        return true;
-      });
-    } catch (err) {
-      console.warn('Failed to fetch server messages:', err);
-      return [];
     }
   }
 
@@ -2191,10 +2233,13 @@ class PocketBaseService {
       return [];
     }
     try {
-      const records = await this.pb.collection('calls').getFullList({
-        filter: `channel = "${channelId}"`
+      const records = await this.pb.collection('calls').getList(1, 20, {
+        filter: `channel = "${channelId}"`,
+        sort: '-updated',
+        skipTotal: true,
+        requestKey: `active-calls:${channelId}`,
       });
-      return records as any as Call[];
+      return (records.items || []) as any as Call[];
     } catch (err) {
       console.warn('Could not fetch active calls:', err);
       return [];
@@ -2225,309 +2270,6 @@ class PocketBaseService {
     return record as any as Call;
   }
 
-  // --- REAL-TIME VOICE PRESENCE PERSISTENCE & SUBSCRIPTION ---
-  private memoryVoicePresences: Map<string, any> = new Map();
-
-  async syncVoicePresence(info: any): Promise<void> {
-    if (!info || !info.userId || !info.channelId) return;
-    this.memoryVoicePresences.set(info.userId, {
-      ...info,
-      updatedAt: Date.now()
-    });
-
-    if (this.isDemo) return;
-
-    // Database sync throttle: avoid thrashing SQLite write locks if status has not changed
-    const now = Date.now();
-    const stateSig = `${info.channelId}_${info.isMuted}_${info.isDeafened}_${info.isCameraEnabled}_${info.isScreenSharing}_${info.isSpeaking}`;
-    const lastTime = this.lastVoiceSyncTimeByUser.get(info.userId) || 0;
-    const lastSig = this.lastVoiceSyncStateByUser.get(info.userId);
-
-    if (lastSig === stateSig && (now - lastTime < 45000)) {
-      return;
-    }
-    this.lastVoiceSyncTimeByUser.set(info.userId, now);
-    this.lastVoiceSyncStateByUser.set(info.userId, stateSig);
-
-    // 1. Sync via voice_presences collection (only if backend supports this collection)
-    if (this.voicePresencesSupported) {
-      try {
-        const existing = await this.pb.collection('voice_presences').getList(1, 1, {
-          filter: `user = "${info.userId}"`
-        }).catch((err: any) => {
-          if (err?.status === 404 || String(err?.message || '').includes('404')) {
-            this.voicePresencesSupported = false;
-          }
-          return null;
-        });
-
-        if (this.voicePresencesSupported) {
-          const payload = {
-            user: info.userId,
-            channel: info.channelId,
-            server: info.serverId || '',
-            display_name: info.displayName || '',
-            avatar: info.avatar || '',
-            is_muted: !!info.isMuted,
-            is_deafened: !!info.isDeafened,
-            is_camera_enabled: !!info.isCameraEnabled,
-            is_screen_sharing: !!info.isScreenSharing,
-            is_speaking: !!info.isSpeaking,
-            joined_at: info.joinedAt || Date.now(),
-            last_heartbeat: Date.now()
-          };
-
-          if (existing && existing.items && existing.items.length > 0) {
-            await this.pb.collection('voice_presences').update(existing.items[0].id, payload);
-          } else {
-            await this.pb.collection('voice_presences').create(payload);
-          }
-        }
-      } catch (e: any) {
-        if (e?.status === 404 || String(e?.message || '').includes('404')) {
-          this.voicePresencesSupported = false;
-        }
-      }
-    }
-
-    // 2. Sync via calls collection (guaranteed working collection)
-    try {
-      const callPayload = {
-        channel: info.channelId,
-        started_by: info.userId,
-        call: JSON.stringify({
-          channelId: info.channelId,
-          serverId: info.serverId || '',
-          userId: info.userId,
-          userRef: info.userRef,
-          displayName: info.displayName,
-          avatar: info.avatar,
-          isMuted: info.isMuted,
-          isDeafened: info.isDeafened || false,
-          isCameraEnabled: info.isCameraEnabled,
-          isScreenSharing: info.isScreenSharing,
-          isSpeaking: info.isSpeaking,
-          joinedAt: info.joinedAt || Date.now(),
-          lastHeartbeat: Date.now()
-        })
-      };
-
-      const existingCalls = await this.pb.collection('calls').getList(1, 10, {
-        filter: `started_by = "${info.userId}"`
-      }).catch(() => null);
-
-      if (existingCalls && existingCalls.items && existingCalls.items.length > 0) {
-        await this.pb.collection('calls').update(existingCalls.items[0].id, callPayload);
-      } else {
-        await this.pb.collection('calls').create(callPayload);
-      }
-    } catch (e) {}
-  }
-
-  async deleteVoicePresence(userId: string): Promise<void> {
-    if (!userId) return;
-    this.memoryVoicePresences.delete(userId);
-    if (this.isDemo) return;
-
-    if (this.voicePresencesSupported) {
-      try {
-        const existing = await this.pb.collection('voice_presences').getFullList({
-          filter: `user = "${userId}"`
-        }).catch((err: any) => {
-          if (err?.status === 404 || String(err?.message || '').includes('404')) {
-            this.voicePresencesSupported = false;
-          }
-          return null;
-        });
-
-        if (existing && existing.length > 0) {
-          await Promise.all(
-            existing.map((item: any) => this.pb.collection('voice_presences').delete(item.id).catch(() => {}))
-          );
-        }
-      } catch (e: any) {
-        if (e?.status === 404 || String(e?.message || '').includes('404')) {
-          this.voicePresencesSupported = false;
-        }
-      }
-    }
-
-    try {
-      const existingCalls = await this.pb.collection('calls').getFullList({
-        filter: `started_by = "${userId}"`
-      }).catch(() => null);
-
-      if (existingCalls && existingCalls.length > 0) {
-        await Promise.all(
-          existingCalls.map((item: any) => this.pb.collection('calls').delete(item.id).catch(() => {}))
-        );
-      }
-    } catch (e) {}
-  }
-
-  async fetchVoicePresences(): Promise<any[]> {
-    if (this.isDemo) {
-      return Array.from(this.memoryVoicePresences.values());
-    }
-
-    const now = Date.now();
-    if (this.cachedVoicePresences && (now - this.lastVoicePresencesFetchTime < 10000)) {
-      return this.cachedVoicePresences;
-    }
-
-    const presences: any[] = [];
-    const MAX_AGE_MS = 25000; // 25 seconds max age for voice presences
-
-    if (this.voicePresencesSupported) {
-      try {
-        const records = await this.pb.collection('voice_presences').getFullList({
-          sort: '-updated'
-        }).catch((err: any) => {
-          if (err?.status === 404 || String(err?.message || '').includes('404')) {
-            this.voicePresencesSupported = false;
-          }
-          return null;
-        });
-
-        if (records && records.length > 0) {
-          records.forEach((r: any) => {
-            const updatedAt = new Date(r.updated || r.created || Date.now()).getTime();
-            if (now - updatedAt < MAX_AGE_MS) {
-              presences.push({
-                channelId: r.channel,
-                serverId: r.server,
-                userId: r.user,
-                displayName: r.display_name,
-                avatar: r.avatar,
-                isMuted: r.is_muted,
-                isDeafened: r.is_deafened,
-                isCameraEnabled: r.is_camera_enabled,
-                isScreenSharing: r.is_screen_sharing,
-                isSpeaking: r.is_speaking,
-                joinedAt: r.joined_at,
-                lastHeartbeat: updatedAt,
-              });
-            }
-          });
-        }
-      } catch (err: any) {
-        if (err?.status === 404 || String(err?.message || '').includes('404')) {
-          this.voicePresencesSupported = false;
-        }
-      }
-    }
-
-    try {
-      const callRecords = await this.pb.collection('calls').getFullList({
-        sort: '-updated'
-      });
-      if (callRecords && callRecords.length > 0) {
-        callRecords.forEach((r: any) => {
-          const updatedAt = new Date(r.updated || r.created || Date.now()).getTime();
-          if (now - updatedAt < MAX_AGE_MS) {
-            if (r.call && r.call.startsWith('{')) {
-              try {
-                const parsed = JSON.parse(r.call);
-                if (parsed && parsed.userId && parsed.channelId) {
-                  if (!presences.some((p) => p.userId === parsed.userId)) {
-                    presences.push({
-                      ...parsed,
-                      lastHeartbeat: updatedAt,
-                    });
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        });
-      }
-    } catch (e) {}
-
-    this.cachedVoicePresences = presences;
-    this.lastVoicePresencesFetchTime = now;
-    return presences;
-  }
-
-  subscribeToVoicePresences(callback: (event: any) => void): () => void {
-    if (this.isDemo) {
-      return () => {};
-    }
-
-    const unsubs: Array<() => void> = [];
-
-    if (this.voicePresencesSupported) {
-      try {
-        this.pb.collection('voice_presences').subscribe('*', (e: any) => {
-          const r = e.record;
-          if (e.action === 'delete') {
-            callback({
-              status: 'left',
-              userId: r?.user,
-              channelId: r?.channel,
-              serverId: r?.server
-            });
-          } else {
-            callback({
-              status: e.action === 'create' ? 'joined' : 'updated',
-              channelId: r?.channel,
-              serverId: r?.server,
-              userId: r?.user,
-              displayName: r?.display_name,
-              avatar: r?.avatar,
-              isMuted: r?.is_muted,
-              isDeafened: r?.is_deafened,
-              isCameraEnabled: r?.is_camera_enabled,
-              isScreenSharing: r?.is_screen_sharing,
-              isSpeaking: r?.is_speaking,
-              joinedAt: r?.joined_at,
-              lastHeartbeat: new Date(r?.updated || Date.now()).getTime(),
-            });
-          }
-        }).catch(() => {
-          this.voicePresencesSupported = false;
-        });
-
-        unsubs.push(() => {
-          this.pb.collection('voice_presences').unsubscribe('*').catch(() => {});
-        });
-      } catch (e) {
-        this.voicePresencesSupported = false;
-      }
-    }
-
-    try {
-      this.pb.collection('calls').subscribe('*', (e: any) => {
-        const r = e.record;
-        if (e.action === 'delete') {
-          callback({
-            status: 'left',
-            userId: r?.started_by,
-            channelId: r?.channel,
-          });
-        } else if (r?.call && r.call.startsWith('{')) {
-          try {
-            const parsed = JSON.parse(r.call);
-            if (parsed && parsed.userId && parsed.channelId) {
-              callback({
-                status: e.action === 'create' ? 'joined' : 'updated',
-                ...parsed,
-                lastHeartbeat: new Date(r.updated || Date.now()).getTime(),
-              });
-            }
-          } catch (err) {}
-        }
-      }).catch(() => {});
-
-      unsubs.push(() => {
-        this.pb.collection('calls').unsubscribe('*').catch(() => {});
-      });
-    } catch (e) {}
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-    };
-  }
-
   // --- REALTIME SUBSCRIPTIONS ---
   private messageListeners = new Set<{ channelId: string; callback: (event: any) => void }>();
   private messagesSubscribed = false;
@@ -2539,28 +2281,24 @@ class PocketBaseService {
 
     try {
       this.pb.collection('messages').subscribe('*', (e) => {
-        // 1. Immediately invoke all matching callbacks with raw record for 0ms latency
-        this.messageListeners.forEach(({ channelId, callback }) => {
-          if (channelId === '*' || e.record?.channel === channelId) {
-            try {
-              callback(e);
-            } catch (cbErr) {
-              console.warn('[REALTIME] Error in message callback:', cbErr);
+        // Deletes already contain all data needed by the UI. Creates/updates
+        // are delivered once, after the single expanded lookup below.
+        if (e.action === 'delete') {
+          this.messageListeners.forEach(({ channelId, callback }) => {
+            if (channelId === '*' || e.record?.channel === channelId) {
+              try { callback(e); } catch (cbErr) { console.warn('[REALTIME] Error in message callback:', cbErr); }
             }
-          }
-        });
-
-        // 2. Asynchronously fetch expanded relations without blocking
-        if (e.record?.id && e.action !== 'delete') {
+          });
+        } else if (e.record?.id) {
           this.pb.collection('messages').getOne(e.record.id, {
-            expand: 'sender,reply_to,attachments(message)',
+            expand: 'sender,reply_to,attachments_via_message',
             requestKey: null
           }).then((fullRecord) => {
             this.messageListeners.forEach(({ channelId, callback }) => {
               if (channelId === '*' || fullRecord.channel === channelId) {
                 try {
                   callback({
-                    action: 'update',
+                    action: e.action,
                     record: fullRecord
                   });
                 } catch (cbErr) {}
@@ -2600,7 +2338,7 @@ class PocketBaseService {
           if (messageId) {
             try {
               const fullRecord = await this.pb.collection('messages').getOne(messageId, {
-                expand: 'sender,reply_to,attachments(message)',
+                expand: 'sender,reply_to,attachments_via_message',
                 requestKey: null
               });
               this.messageListeners.forEach(({ channelId, callback }) => {
@@ -2761,7 +2499,7 @@ class PocketBaseService {
     }
 
     const record = await this.pb.collection('users').update(userId, formData);
-    if (this.pb.authStore.record && this.pb.authStore.record.id === userId) {
+    if (this.pb.authStore.model && this.pb.authStore.model.id === userId) {
       this.pb.authStore.save(this.pb.authStore.token, record);
     }
     return record as any as User;
@@ -2900,11 +2638,11 @@ class PocketBaseService {
     let record: any;
     try {
       record = await this.pb.collection('messages').update(messageId, { content, edited: true, edited_at: now }, {
-        expand: 'sender,reply_to,attachments(message)'
+        expand: 'sender,reply_to,attachments_via_message'
       });
     } catch {
       record = await this.pb.collection('messages').update(messageId, { content }, {
-        expand: 'sender,reply_to,attachments(message)'
+        expand: 'sender,reply_to,attachments_via_message'
       });
     }
     const msg = record as any as Message;
@@ -2924,8 +2662,8 @@ class PocketBaseService {
 
     const collectionName = isDm ? 'private_messages' : 'messages';
     const expandQuery = isDm
-      ? 'sender,reply_to,attachments(message),private_attachments(message)'
-      : 'sender,reply_to,attachments(message)';
+      ? 'sender,reply_to,attachments_via_message,private_attachments_via_message'
+      : 'sender,reply_to,attachments_via_message';
 
     if (this.isDemo) {
       const demoKey = `demo_reactions_${messageId}`;
@@ -3369,7 +3107,32 @@ class PocketBaseService {
       }
     } catch (e) {}
 
-    // 1. Safe query strategy: try standard 'users' filter first, then fallback to user1/user2
+    // 1. Prefer the normalized membership relation. The old multiselect
+    // `users ~ ...` scan becomes increasingly expensive as DM servers grow.
+    try {
+      const memberships = await this.pb.collection('private_chat_members').getFullList({
+        filter: `user = "${currentId}"`,
+        requestKey: null,
+      });
+      const ids = Array.from(new Set(memberships.map((membership: any) => membership.chat_server).filter(Boolean)));
+      if (ids.length > 0) {
+        const filter = ids.map((id) => `id = "${id}"`).join(' || ');
+        const normalized = await this.pb.collection('private_chat_servers').getFullList({ filter, requestKey: null });
+        normalized.forEach((s: any) => {
+          const users = s.users || [s.user1, s.user2].filter(Boolean);
+          const otherId = users.find((u: string) => u !== currentId) || users[0];
+          if (otherId) this.privateChatServerCache.set(otherId, s);
+          this.privateChatServerCache.set(s.id, s);
+        });
+        if (normalized.length > 0) {
+          try { localStorage.setItem(`cached_pcs_${currentId}`, JSON.stringify(normalized)); } catch (e) {}
+          return normalized;
+        }
+      }
+    } catch (membershipErr) {}
+
+    // 2. Compatibility fallback for older installations without the
+    // private_chat_members relation.
     let list: any[] = [];
     try {
       list = await this.pb.collection('private_chat_servers').getFullList({
@@ -3400,7 +3163,7 @@ class PocketBaseService {
       return list;
     }
 
-    // 2. Parallel membership query fallback
+    // 3. Parallel membership query fallback
     try {
       const myMemberships = await this.pb.collection('private_chat_members').getFullList({
         filter: `user = "${currentId}"`,
@@ -3557,24 +3320,23 @@ class PocketBaseService {
     if (now - lastSync < 15000 || this.dmSyncInFlight.has(targetServerId)) return;
     this.dmLastBackgroundSync.set(targetServerId, now);
     this.dmSyncInFlight.add(targetServerId);
-    this.pb.collection('private_messages').getList(1, 40, {
-      filter: `chat_server = "${targetServerId}"`,
-      sort: '-created',
-      expand: 'sender,reply_to',
-      requestKey: null
-    }).then((res) => {
-      const ready = (res.items as any as Message[]).filter((m) => {
-        if (m.deleted || Boolean(m.deleted_at && m.deleted_at !== '') || MessageDeletionService.isMessageDeleted(m.id)) {
-          return false;
-        }
-        return true;
-      });
-      const processed = [...ready].reverse();
-      if (processed.length > 0) {
-        this.dmMessagesCache.set(targetServerId, processed);
-        if (recipientId) this.dmMessagesCache.set(recipientId, processed);
-        offlineCacheService.saveCachedMessages(`dm-server-${targetServerId}`, processed, false, 1);
-        if (recipientId) offlineCacheService.saveCachedMessages(`dm-user-${recipientId}`, processed, false, 1);
+    this.fetchDirectMessagePage(targetServerId, 30).then(async (page) => {
+      const merged = await offlineCacheService.mergeChannelMessages(
+        `dm-server-${targetServerId}`,
+        page.items,
+        page.hasMore,
+        1,
+      );
+      const processed = merged.items;
+      this.dmMessagesCache.set(targetServerId, processed);
+      if (recipientId) this.dmMessagesCache.set(recipientId, processed);
+      if (recipientId) {
+        await offlineCacheService.mergeChannelMessages(
+          `dm-user-${recipientId}`,
+          page.items,
+          page.hasMore,
+          1,
+        );
       }
     }).catch(() => {}).finally(() => {
       this.dmSyncInFlight.delete(targetServerId);
@@ -3651,15 +3413,29 @@ class PocketBaseService {
       }
     }
 
+    // Keep the legacy method compatible for older callers, but route all
+    // resolved conversations through the shared cursor page implementation.
+    // This removes the former fixed 40-row query and its attachment retry
+    // cascade. New UI code calls fetchDirectMessagePage directly.
+    if (targetServerId) {
+      const page = await this.fetchDirectMessagePage(targetServerId, 30);
+      const chronological = page.items;
+      this.dmMessagesCache.set(targetServerId, chronological);
+      if (recipientId) this.dmMessagesCache.set(recipientId, chronological);
+      offlineCacheService.saveCachedMessages(`dm-server-${targetServerId}`, chronological, page.hasMore, 1);
+      if (recipientId) offlineCacheService.saveCachedMessages(`dm-user-${recipientId}`, chronological, page.hasMore, 1);
+      return chronological;
+    }
+
     let rawRecords: any[] = [];
 
     // 3. Primary query: by chat_server with sort '-created' and expand 'sender,reply_to'
     if (targetServerId) {
       try {
         const res = await withTimeout(
-          this.pb.collection('private_messages').getList(1, 40, {
+          this.pb.collection('private_messages').getList(1, 30, {
             filter: `chat_server = "${targetServerId}"`,
-            sort: '-created',
+            sort: '-created,-id',
             expand: 'sender,reply_to',
             requestKey: null
           }),
@@ -3670,9 +3446,9 @@ class PocketBaseService {
         // Fast zero-join fallback if expand or heavy query takes too long
         try {
           const fastRes = await withTimeout(
-            this.pb.collection('private_messages').getList(1, 40, {
+            this.pb.collection('private_messages').getList(1, 30, {
               filter: `chat_server = "${targetServerId}"`,
-              sort: '-created',
+              sort: '-created,-id',
               requestKey: null
             }),
             5000
@@ -3701,9 +3477,9 @@ class PocketBaseService {
         if (altServer?.id) {
           try {
             const altRes = await withTimeout(
-              this.pb.collection('private_messages').getList(1, 40, {
+              this.pb.collection('private_messages').getList(1, 30, {
                 filter: `chat_server = "${altServer.id}"`,
-                sort: '-created',
+                sort: '-created,-id',
                 expand: 'sender,reply_to',
                 requestKey: null
               }),
@@ -3726,9 +3502,9 @@ class PocketBaseService {
         if (server?.id) {
           targetServerId = server.id;
           const res = await withTimeout(
-            this.pb.collection('private_messages').getList(1, 40, {
+          this.pb.collection('private_messages').getList(1, 30, {
               filter: `chat_server = "${targetServerId}"`,
-              sort: '-created',
+              sort: '-created,-id',
               expand: 'sender,reply_to',
               requestKey: null
             }),
@@ -3816,6 +3592,53 @@ class PocketBaseService {
     if (recipientId) offlineCacheService.saveCachedMessages(`dm-user-${recipientId}`, [], false, 1);
 
     return [];
+  }
+
+  async fetchDirectMessagePage(
+    chatServerId: string,
+    limit: number = 30,
+    before?: MessageCursor,
+  ): Promise<MessagePage> {
+    const page = await this.fetchMessagePage(chatServerId, 'dm', limit, before);
+    if (page.items.length === 0 || this.isDemo) return page;
+
+    const ids = page.items.filter((message) => message.has_attachment).map((message) => message.id);
+    if (ids.length > 0) {
+      const attachmentKey = `message-attachments:dm:${chatServerId}`;
+      this.messageAttachmentControllers.get(attachmentKey)?.abort();
+      const controller = new AbortController();
+      this.messageAttachmentControllers.set(attachmentKey, controller);
+      try {
+        const filter = ids.map((id) => `message = "${id}"`).join(' || ');
+        const attachments = await this.pb.collection('private_attachments').getFullList({
+          filter,
+          requestKey: null,
+          signal: controller.signal,
+        });
+        const byMessage = new Map<string, any[]>();
+        (attachments as any[]).forEach((attachment) => {
+          const list = byMessage.get(attachment.message) || [];
+          list.push(attachment);
+          byMessage.set(attachment.message, list);
+        });
+        page.items = page.items.map((message) => {
+          const list = byMessage.get(message.id);
+          if (!list?.length) return message;
+          return {
+            ...message,
+            attachments: list,
+            expand: { ...(message.expand || {}), private_attachments_via_message: list },
+          };
+        });
+      } catch (error) {
+        console.warn('Failed to load direct-message attachments:', error);
+      } finally {
+        if (this.messageAttachmentControllers.get(attachmentKey) === controller) {
+          this.messageAttachmentControllers.delete(attachmentKey);
+        }
+      }
+    }
+    return page;
   }
 
   async sendDirectMessage(recipientId: string, content: string, replyToId?: string, chatServerId?: string, hasAttachment: boolean = false): Promise<Message> {
@@ -3906,19 +3729,13 @@ class PocketBaseService {
 
     try {
       this.pb.collection('private_messages').subscribe('*', (e) => {
-        // 1. Immediately invoke all matching callbacks with raw record for 0ms latency
-        this.privateMessageListeners.forEach(({ chatServerId, callback }) => {
-          if (chatServerId === '*' || e.record?.chat_server === chatServerId) {
-            try {
-              callback(e);
-            } catch (cbErr) {
-              console.warn('[REALTIME] Error in DM callback:', cbErr);
+        if (e.action === 'delete') {
+          this.privateMessageListeners.forEach(({ chatServerId, callback }) => {
+            if (chatServerId === '*' || e.record?.chat_server === chatServerId) {
+              try { callback(e); } catch (cbErr) { console.warn('[REALTIME] Error in DM callback:', cbErr); }
             }
-          }
-        });
-
-        // 2. Asynchronously fetch expanded relations without blocking
-        if (e.record?.id && e.action !== 'delete') {
+          });
+        } else if (e.record?.id) {
           this.pb.collection('private_messages').getOne(e.record.id, {
             expand: 'sender,reply_to',
             requestKey: null
@@ -3931,15 +3748,18 @@ class PocketBaseService {
                 });
                 if (atts.length > 0) {
                   if (!fullRecord.expand) fullRecord.expand = {};
+                  fullRecord.expand['attachments_via_message'] = atts;
+                  fullRecord.expand['private_attachments_via_message'] = atts;
+                  // Legacy aliases keep older renderers and cached records readable.
                   fullRecord.expand['attachments(message)'] = atts;
                   fullRecord.expand['private_attachments(message)'] = atts;
                 }
               } catch (attErr) {}
             }
-            this.privateMessageListeners.forEach(({ chatServerId, callback }) => {
-              if (chatServerId === '*' || fullRecord.chat_server === chatServerId) {
-                try {
-                  callback({ action: e.action, record: fullRecord });
+              this.privateMessageListeners.forEach(({ chatServerId, callback }) => {
+                if (chatServerId === '*' || fullRecord.chat_server === chatServerId) {
+                  try {
+                    callback({ action: e.action, record: fullRecord });
                 } catch (cbErr) {}
               }
             });
@@ -3972,14 +3792,16 @@ class PocketBaseService {
           if (messageId) {
             try {
               const fullRecord = await this.pb.collection('private_messages').getOne(messageId, {
-                expand: 'sender,reply_to,attachments(message),private_attachments(message)',
+                expand: 'sender,reply_to,attachments_via_message,private_attachments_via_message',
                 requestKey: null
               });
-              const pubAtts = fullRecord.expand?.['attachments(message)'] || [];
-              const privAtts = fullRecord.expand?.['private_attachments(message)'] || [];
+              const pubAtts = fullRecord.expand?.['attachments_via_message'] || fullRecord.expand?.['attachments(message)'] || [];
+              const privAtts = fullRecord.expand?.['private_attachments_via_message'] || fullRecord.expand?.['private_attachments(message)'] || [];
               const combined = normalizeAttachmentRecords(pubAtts, privAtts);
               if (combined.length > 0) {
                 if (!fullRecord.expand) fullRecord.expand = {};
+                fullRecord.expand['attachments_via_message'] = combined;
+                fullRecord.expand['private_attachments_via_message'] = combined;
                 fullRecord.expand['attachments(message)'] = combined;
                 fullRecord.expand['private_attachments(message)'] = combined;
               }

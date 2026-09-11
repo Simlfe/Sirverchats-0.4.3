@@ -32,8 +32,7 @@ import {
   Users,
   X
 } from 'lucide-react';
-import useRealtimeMedia from '../context/MediaContext';
-import liveKitManager from '../media/livekit/LiveKitManager';
+import useRealtimeMedia from '../context/MediaContextBridge';
 import voicePresenceStore from '../services/voicePresenceStore';
 import wsService from '../services/websocket';
 import { ScreenShare, Video } from 'lucide-react';
@@ -379,13 +378,6 @@ function ChannelList({
     () => accessibleChannels.filter((c) => c.type === 'voice'),
     [accessibleChannels]
   );
-
-  // Prefetch LiveKit token for the first voice channel in background when server opens
-  React.useEffect(() => {
-    if (voiceChannels.length > 0 && currentUser) {
-      liveKitManager.prefetchChannelToken(voiceChannels[0], currentUser);
-    }
-  }, [activeServer?.id, voiceChannels.length, currentUser?.id]);
 
   // User notification preferences
   const settingsObj = getCachedUserSettings();
@@ -889,11 +881,6 @@ function ChannelList({
                         <button
                           type="button"
                           onClick={() => onSelectChannel(c)}
-                          onMouseEnter={() => {
-                            if (currentUser) {
-                              liveKitManager.prefetchChannelToken(c, currentUser);
-                            }
-                          }}
                           className={`w-full px-3 py-2.5 rounded-xl font-bold text-xs flex items-center justify-between cursor-pointer border-0 text-left group relative overflow-hidden ${
                             isActive
                               ? 'bg-[var(--theme-bg-tertiary)] text-[var(--theme-text-primary)] font-extrabold'

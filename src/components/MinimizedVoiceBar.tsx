@@ -18,7 +18,7 @@ import {
   WifiOff,
   SlidersHorizontal
 } from 'lucide-react';
-import { useRealtimeMedia } from '../context/MediaContext';
+import { useRealtimeMedia } from '../context/MediaContextBridge';
 import AudioMixerModal from './AudioMixerModal';
 import { Channel } from '../types';
 

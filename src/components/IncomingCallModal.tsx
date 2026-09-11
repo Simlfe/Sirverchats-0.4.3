@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { Phone, PhoneOff, Video, Mic } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Avatar from './Avatar';
-import useRealtimeMedia from '../context/MediaContext';
+import useRealtimeMedia from '../context/MediaContextBridge';
 import { getServerMemberAvatarUrl, pbService } from '../pocketbase';
 
 export const IncomingCallModal: React.FC = () => {

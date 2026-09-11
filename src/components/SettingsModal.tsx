@@ -95,7 +95,7 @@ import {
   AVAILABLE_FONTS,
   FontOption,
 } from '../theme/adminThemeService';
-import { getDownloadDirectory, openDownloadDirectory, getCustomDownloadDirSetting, setCustomDownloadDirSetting, ensureDownloadDirectoryExists } from '../lib/tauriDesktopService';
+import { getDownloadDirectory, openDownloadDirectory, getCustomDownloadDirSetting, setCustomDownloadDirSetting, ensureDownloadDirectoryExists } from '../lib/nativePlatform';
 import DownloadsTabContent from './DownloadsTabContent';
 import { useBackHandler } from '../services/backStackManager';
 

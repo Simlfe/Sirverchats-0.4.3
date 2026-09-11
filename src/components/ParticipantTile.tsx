@@ -4,7 +4,7 @@ import { MediaParticipant } from '../types/media';
 import { User } from '../types';
 import Avatar from './Avatar';
 import { getServerMemberAvatarUrl, pbService } from '../pocketbase';
-import useRealtimeMedia from '../context/MediaContext';
+import useRealtimeMedia from '../context/MediaContextBridge';
 import VideoPlayer from './video/VideoPlayer';
 import ParticipantDiagnosticsOverlay from './ParticipantDiagnosticsOverlay';
 import VolumeSliderPortal from './VolumeSliderPortal';

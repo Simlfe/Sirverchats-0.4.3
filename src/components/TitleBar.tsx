@@ -9,7 +9,7 @@ import {
   restoreWindowState,
   saveWindowState,
   startWindowDragging
-} from '../lib/tauriDesktopService';
+} from '../lib/nativePlatform';
 
 interface TitleBarProps {
   appName?: string;

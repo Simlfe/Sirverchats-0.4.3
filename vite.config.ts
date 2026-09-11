@@ -52,8 +52,10 @@ function livekitCorsPlugin(): Plugin {
       return next();
     }
 
-    const origin = req.headers.origin || '*';
-    const matchedOrigin = checkAllowedOrigin(origin) || origin;
+    const origin = req.headers.origin as string | undefined;
+    // Never echo an arbitrary Origin. Browsers without an Origin header are
+    // non-CORS requests and may use `*`; unknown browser origins are denied.
+    const matchedOrigin = checkAllowedOrigin(origin) || (origin ? 'null' : '*');
 
     res.setHeader('Access-Control-Allow-Origin', matchedOrigin);
     res.setHeader('Vary', 'Origin');
@@ -114,9 +116,28 @@ function livekitCorsPlugin(): Plugin {
   };
 }
 
+function deferMediaVendorPlugin(): Plugin {
+  return {
+    name: 'defer-media-vendor-preload',
+    // Rollup hoists a shared LiveKit chunk into the entry when several
+    // call-related lazy chunks reference it. Keep it available to those
+    // chunks, but do not fetch it on the initial web route.
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+      return {
+        code: code.replace(/import["']\.\/media-vendor-[^"']+["'];?/g, ''),
+        map: null,
+      };
+    },
+    transformIndexHtml(html) {
+      return html.replace(/\s*<link rel="modulepreload"[^>]*media-vendor-[^>]+>\s*/g, '\n');
+    },
+  };
+}
+
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), livekitCorsPlugin()],
+    plugins: [react(), tailwindcss(), livekitCorsPlugin(), deferMediaVendorPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
@@ -128,6 +149,21 @@ export default defineConfig(() => {
       allowedHosts: true as const,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    build: {
+      chunkSizeWarningLimit: 450,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/livekit-client') || id.includes('node_modules/@livekit') || id.includes('node_modules/gifsicle-wasm-browser')) return 'media-vendor';
+            if (id.includes('node_modules/@tauri-apps') || id.includes('node_modules/@capacitor')) return 'native-vendor';
+            if (id.includes('node_modules/lucide-react')) return 'icons-vendor';
+            if (id.includes('node_modules')) return 'vendor';
+            if (id.includes('/src/pocketbase.') || id.includes('\\src\\pocketbase.')) return 'data';
+            return undefined;
+          },
+        },
+      },
     },
   };
 });

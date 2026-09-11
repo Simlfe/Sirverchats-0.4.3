@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useRealtimeMedia } from '../context/MediaContext';
+import { useRealtimeMedia } from '../context/MediaContextBridge';
 import { CameraQualityProfile } from '../types/media';
 import { Camera, Video, Zap, Activity, ShieldCheck, Gauge, Info, RefreshCw, Cpu, Layers, Mic, MicOff, Volume2 } from 'lucide-react';
 import realtimeMediaProvider from '../media/RealtimeMediaProvider';

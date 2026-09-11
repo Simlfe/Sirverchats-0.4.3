@@ -19,7 +19,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { useRealtimeMedia } from '../context/MediaContext';
+import { useRealtimeMedia } from '../context/MediaContextBridge';
 import { getServerMemberAvatarUrl, pbService } from '../pocketbase';
 import Avatar from './Avatar';
 import AudioMixerModal from './AudioMixerModal';

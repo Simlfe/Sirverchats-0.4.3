@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { openExternalUrl } from '../lib/tauriDesktopService';
+import { openExternalUrl } from '../lib/nativePlatform';
 
 interface ExternalImagePreviewProps {
   url: string;

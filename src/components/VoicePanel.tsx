@@ -26,7 +26,7 @@ import {
   SlidersHorizontal,
   RotateCw,
 } from 'lucide-react';
-import useRealtimeMedia from '../context/MediaContext';
+import useRealtimeMedia from '../context/MediaContextBridge';
 import ParticipantTile from './ParticipantTile';
 import VideoPlayer from './video/VideoPlayer';
 import AudioMixerModal from './AudioMixerModal';

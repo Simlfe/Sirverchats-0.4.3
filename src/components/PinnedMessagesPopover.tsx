@@ -144,6 +144,8 @@ export default function PinnedMessagesPopover({
                   pinnedMessages.map((msg) => {
                     const sender = msg.expand?.sender;
                     const rawList: Attachment[] = [
+                      ...(msg.expand?.['attachments_via_message'] || []),
+                      ...(msg.expand?.['private_attachments_via_message'] || []),
                       ...(msg.expand?.['attachments(message)'] || []),
                       ...(msg.expand?.['private_attachments(message)'] || []),
                       ...(msg.expand?.attachments || []),
@@ -476,4 +478,3 @@ export default function PinnedMessagesPopover({
     </AnimatePresence>
   );
 }
-

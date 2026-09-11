@@ -142,6 +142,8 @@ export interface Message {
   expand?: {
     sender?: User;
     reply_to?: Message;
+    'attachments_via_message'?: Attachment[];
+    'private_attachments_via_message'?: Attachment[];
     'attachments(message)'?: Attachment[];
     'private_attachments(message)'?: Attachment[];
     attachments?: Attachment[];
@@ -149,6 +151,18 @@ export interface Message {
     [key: string]: any;
   };
   is_pending?: boolean; // For local echo
+}
+
+/** Stable cursor used by both public-channel and direct-message history. */
+export interface MessageCursor {
+  created: string;
+  id: string;
+}
+
+export interface MessagePage {
+  items: Message[];
+  nextCursor: MessageCursor | null;
+  hasMore: boolean;
 }
 
 export interface DownloadedFileRecord {

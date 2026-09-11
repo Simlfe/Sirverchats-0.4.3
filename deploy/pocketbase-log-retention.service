@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune old PocketBase request logs
+
+[Service]
+Type=oneshot
+User=root
+Environment=PB_DATA_DIR=/home/sirver/pb_app/pb_data
+Environment=RETENTION_DAYS=14
+ExecStart=/home/sirver/pb_app/prune-logs.sh

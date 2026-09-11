@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { PhoneOff, Mic, MicOff, Headphones, Video, VideoOff, ScreenShare, Radio, Volume2, RotateCw, SlidersHorizontal, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import useRealtimeMedia from '../context/MediaContext';
+import useRealtimeMedia from '../context/MediaContextBridge';
 import ParticipantTile from './ParticipantTile';
 import AudioMixerModal from './AudioMixerModal';
 import { User } from '../types';

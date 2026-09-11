@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { User, Channel } from '../types';
 import {
   MediaParticipant,
@@ -18,53 +18,13 @@ import { getServerMemberAvatarUrl, getServerMemberDisplayName, pbService, parseC
 import { checkAndRequestMicrophonePermission, checkAndRequestCameraPermission, checkAndRequestScreenSharePermission } from '../utils/permissions';
 import { voiceSessionRecovery } from '../services/voiceSessionRecovery';
 import { recordCallLog } from '../services/callLogService';
-
-interface MediaContextType {
-  activeRoom: RoomConfig | null;
-  participants: MediaParticipant[];
-  connectionState: MediaConnectionState;
-  isMuted: boolean;
-  isDeafened: boolean;
-  isCameraEnabled: boolean;
-  isScreenSharing: boolean;
-  incomingCall: IncomingCallEvent | null;
-  outgoingCall: IncomingCallEvent | null;
-  isRingMuted: boolean;
-  activeCallDuration: number;
-  formattedDuration: string;
-  error: MediaError | null;
-  cameraQualityProfile: CameraQualityProfile;
-  cameraTelemetry: CameraTelemetryData | null;
-  
-  // Actions
-  joinVoiceRoom: (
-    channel: Channel,
-    currentUser: User,
-    mode?: 'voice' | 'video' | 'screen',
-    options?: { listenOnly?: boolean }
-  ) => Promise<void>;
-  startDmCall: (targetUser: User, currentUser: User, dmChannel: Channel, mode?: 'voice' | 'video' | 'screen') => Promise<void>;
-  acceptCall: () => Promise<void>;
-  declineCall: () => void;
-  cancelOutgoingCall: () => void;
-  toggleMuteRing: (muted?: boolean) => void;
-  leaveRoomOrCall: () => Promise<void>;
-  toggleMute: () => void;
-  toggleDeafen: () => void;
-  toggleCamera: () => Promise<void>;
-  switchCamera: () => Promise<boolean>;
-  switchMicrophone: (deviceId: string) => Promise<boolean>;
-  setCameraQualityProfile: (profile: CameraQualityProfile) => void;
-  toggleScreenShare: () => Promise<void>;
-  setParticipantVolume: (userId: string, volume: number) => void;
-  clearError: () => void;
-  
-  // Infrastructure integration injection methods
-  setSFUAdapter: (adapter: SFUProviderAdapter | null) => void;
-  setSFUConfig: (config: SFUServerConfig) => void;
-}
-
-const MediaContext = createContext<MediaContextType | null>(null);
+import {
+  MediaContext,
+  MediaContextType,
+  registerMediaContext,
+  unregisterMediaContext,
+  useRealtimeMedia,
+} from './MediaContextBridge';
 
 export const MediaProvider: React.FC<{
   children: React.ReactNode;
@@ -944,6 +904,13 @@ export const MediaProvider: React.FC<{
     ]
   );
 
+  // Make the live provider available to actions that started while the media
+  // chunk was still being loaded by the deferred root wrapper.
+  useEffect(() => {
+    registerMediaContext(value);
+    return () => unregisterMediaContext(value);
+  }, [value]);
+
   return (
     <MediaContext.Provider value={value}>
       {children}
@@ -951,12 +918,6 @@ export const MediaProvider: React.FC<{
   );
 };
 
-export const useRealtimeMedia = (): MediaContextType => {
-  const ctx = useContext(MediaContext);
-  if (!ctx) {
-    throw new Error('useRealtimeMedia must be used within a MediaProvider');
-  }
-  return ctx;
-};
-
+export { useRealtimeMedia } from './MediaContextBridge';
+export type { MediaContextType } from './MediaContextBridge';
 export default useRealtimeMedia;

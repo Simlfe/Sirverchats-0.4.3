@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Globe, ExternalLink, ShieldCheck, Loader2 } from "lucide-react";
-import { openExternalUrl } from "../lib/tauriDesktopService";
+import { openExternalUrl } from "../lib/nativePlatform";
 
 interface SmartWebLinkPreviewProps {
   url: string;

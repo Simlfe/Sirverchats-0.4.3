@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import { User, Server, ServerRole, ServerMember } from '../types';
 import { pbService, getEffectiveUserStatus, getServerMemberAvatarUrl, getServerMemberBannerUrl, getServerMemberDisplayName, getServerMemberProfileSettings, getEffectiveProfile, getPrimaryServerRole, mergeUserRecord } from '../pocketbase';
-import { isAndroidPlatform, isMobilePlatform } from '../lib/tauriDesktopService';
+import { isAndroidPlatform, isMobilePlatform } from '../lib/nativePlatform';
 import { X, Calendar, Globe, Award, Mail, MessageSquare, Phone, UserX, UserPlus, UserCheck, Clock, UserMinus, Shield, Camera, Edit3, Check, Loader2, Flag, Ban, AlertTriangle, MoreVertical } from 'lucide-react';
 
 // In-memory lightweight profile card cache to eliminate loading flashes on re-open

@@ -25,7 +25,7 @@
         "livekit-client": "^2.21.0",
         "lucide-react": "^0.546.0",
         "motion": "^12.23.24",
-        "pocketbase": "^0.27.0",
+        "pocketbase": "0.21.5",
         "react": "^19.0.1",
         "react-dom": "^19.0.1",
         "vite": "^6.2.3",
@@ -680,7 +680,7 @@
 
     "plist": ["plist@3.1.1", "", { "dependencies": { "@xmldom/xmldom": "^0.9.10", "base64-js": "^1.5.1", "xmlbuilder": "^15.1.1" } }, "sha512-ZIfcLJC+7E7FBFnDxm9MPmt7D+DidyQ26lewieO75AdhA2ayMtsJSES0iWzqJQbcVRSrTufQoy0DR94xHue0oA=="],
 
-    "pocketbase": ["pocketbase@0.27.1", "", {}, "sha512-5WXhgCZzkm34eLbsuKv5jlGace4NIu43jk8CHxXn2dlSflrLkso/M8eNwoq6J4INVeZ6fP3nIbO+wm9PI5kGnA=="],
+    "pocketbase": ["pocketbase@0.21.5", "", {}, "sha512-bnI/uinnQps+ElSlzxkc4yvwuSFfKcoszDtXH/4QT2FhGq2mJVUvDlxn+rjRXVntUjPfmMG5LEPZ1eGqV6ssog=="],
 
     "postcss": ["postcss@8.5.25", "", { "dependencies": { "nanoid": "^3.3.16", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw=="],
 

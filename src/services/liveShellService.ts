@@ -1,4 +1,4 @@
-import { isTauriEnvironment } from '../lib/tauriDesktopService';
+import { isTauriEnvironment } from '../lib/nativePlatform';
 import { getCachedUserSettings } from '../lib/userSettings';
 
 export interface LiveShellStatus {

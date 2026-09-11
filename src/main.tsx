@@ -1,12 +1,67 @@
-import {StrictMode} from 'react';
+import React, { StrictMode, Suspense, useEffect, useState } from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { ThemeProvider } from './context/ThemeContext.tsx';
-import { MediaProvider } from './context/MediaContext.tsx';
 import { liveShellService } from './services/liveShellService.ts';
 import { cleanupStorageQuota } from './lib/storageManager.ts';
+import { registerMediaProviderLoader } from './context/MediaContextBridge.ts';
 import './index.css';
+
+const LazyMediaProvider = React.lazy(() => import('./context/MediaContext.tsx').then((module) => ({ default: module.MediaProvider })));
+
+function DeferredMediaProvider({ children }: { children: React.ReactNode }) {
+  const [enabled, setEnabled] = useState(false);
+  const readyRef = React.useRef<Promise<void> | null>(null);
+
+  const ensureProvider = React.useCallback((): Promise<void> => {
+    setEnabled(true);
+    if (!readyRef.current) {
+      readyRef.current = new Promise<void>((resolve) => {
+        const check = () => {
+          if (document.querySelector('[data-media-provider="ready"]')) resolve();
+          else window.setTimeout(check, 0);
+        };
+        check();
+      });
+    }
+    return readyRef.current;
+  }, []);
+
+  useEffect(() => {
+    registerMediaProviderLoader(ensureProvider);
+    const enable = () => setEnabled(true);
+    const request = () => { void ensureProvider(); };
+    window.addEventListener('pointerdown', enable, { once: true, passive: true });
+    window.addEventListener('sirver:media-request', request);
+    const idleApi = window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void };
+    if (typeof idleApi.requestIdleCallback === 'function') {
+      const id = idleApi.requestIdleCallback(enable, { timeout: 1500 });
+      return () => {
+        window.removeEventListener('pointerdown', enable);
+        window.removeEventListener('sirver:media-request', request);
+        idleApi.cancelIdleCallback?.(id);
+        registerMediaProviderLoader(null);
+      };
+    }
+    const timeout = window.setTimeout(enable, 1500);
+    return () => {
+      window.removeEventListener('pointerdown', enable);
+      window.removeEventListener('sirver:media-request', request);
+      window.clearTimeout(timeout);
+      registerMediaProviderLoader(null);
+    };
+  }, [ensureProvider]);
+
+  if (!enabled) return <>{children}</>;
+  return (
+    <Suspense fallback={<>{children}</>}>
+      <LazyMediaProvider>
+        <div data-media-provider="ready" className="contents">{children}</div>
+      </LazyMediaProvider>
+    </Suspense>
+  );
+}
 
 // Run quota cleanup during idle time after initial mount if supported
 if (typeof window !== 'undefined') {
@@ -78,9 +133,9 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <ThemeProvider>
-        <MediaProvider>
+        <DeferredMediaProvider>
           <App />
-        </MediaProvider>
+        </DeferredMediaProvider>
       </ThemeProvider>
     </ErrorBoundary>
   </StrictMode>,

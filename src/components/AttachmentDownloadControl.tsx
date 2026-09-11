@@ -20,7 +20,7 @@ import {
   openFileExternally,
   openPathExternally,
   isTauriEnvironment
-} from '../lib/tauriDesktopService';
+} from '../lib/nativePlatform';
 import { DownloadedFileRecord } from '../types';
 
 interface AttachmentDownloadControlProps {

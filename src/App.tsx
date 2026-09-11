@@ -4,8 +4,7 @@ import { pbService, mergeUserRecord } from './pocketbase';
 import { MessageDeletionService } from './services/messageDeletionService';
 import { getLanguageDictionary } from './services/localization';
 import { Bell, RefreshCw, Volume2, CheckCircle, AlertTriangle, RotateCcw, Download, Sparkles } from 'lucide-react';
-import { App as CapApp } from '@capacitor/app';
-import { User, Server, Channel, Message, Attachment, Translation, AppLanguageConfig, MusicTrack, NotificationItem, UnreadChannelInfo, Call } from './types';
+import { User, Server, Channel, Message, MessageCursor, Attachment, Translation, AppLanguageConfig, MusicTrack, NotificationItem, UnreadChannelInfo, Call } from './types';
 import { sendInAppNotification, requestNotificationPermission } from './lib/notifications';
 import { notificationService } from './services/notificationService';
 import { playLeaveSound, playPingSound } from './lib/sounds';
@@ -33,7 +32,7 @@ import NotificationsPopover from './components/NotificationsPopover';
 import TitleBar from './components/TitleBar';
 import { CURRENT_APP_VERSION } from './config/version';
 const ResetPasswordScreen = React.lazy(() => import('./components/ResetPasswordScreen'));
-import { setupWindowCloseRequestedListener, isTauriEnvironment, isMobilePlatform } from './lib/tauriDesktopService';
+import { isTauriEnvironment, isMobilePlatform } from './lib/platform';
 const GlobalMusicPlayer = React.lazy(async () => {
   const module = await import('./components/MusicPlayer');
   return { default: module.GlobalMusicPlayer };
@@ -56,13 +55,44 @@ import { parseCallLog } from './services/callLogService';
 import { offlineCacheService } from './services/offlineCacheService';
 import { parseReactions, toggleReactionInList } from './components/MessageReactions';
 import { areMessagesEqual, isSingleMessageEqual, mergeMessageListPreservingReferences } from './lib/messageDiff';
-import useRealtimeMedia from './context/MediaContext';
-import { realtimeMediaProvider } from './media/RealtimeMediaProvider';
+import { mergeMessagesChronologically } from './lib/messagePagination';
+import useRealtimeMedia, { ensureMediaProvider, getRegisteredMediaContext } from './context/MediaContextBridge';
 import voicePresenceStore from './services/voicePresenceStore';
 import type { ActiveUploadState } from './components/ChatPanel';
 import type { AnchorRect } from './components/UserProfileModal';
 
 const EMPTY_ACTIVE_CALLS: Call[] = [];
+const loadCapacitorApp = () => import('@capacitor/app').then((module) => module.App);
+const isDirectMessageChannel = (channel?: Partial<Channel> | null): boolean => Boolean(
+  channel && (
+    channel.server === 'dm' ||
+    channel.id?.startsWith('dm-') ||
+    channel.id?.startsWith('private-') ||
+    channel.name?.startsWith('@')
+  )
+);
+
+const MAX_ACTIVE_MESSAGES = 500;
+
+/**
+ * Keep the active React window bounded while retaining every fetched page in
+ * the offline cache. Older-page loads slide the window toward the beginning
+ * of the conversation so an anchored prepend remains visible.
+ */
+function selectActiveMessageWindow(all: Message[], previous: Message[] = [], prependOlder = false): Message[] {
+  if (all.length <= MAX_ACTIVE_MESSAGES) return all;
+  if (!prependOlder || previous.length === 0) return all.slice(-MAX_ACTIVE_MESSAGES);
+
+  const previousFirst = previous.find((message) => !message.id.startsWith('optimistic-'))?.id || previous[0]?.id;
+  const anchorIndex = previousFirst ? all.findIndex((message) => message.id === previousFirst) : -1;
+  if (anchorIndex < 0) return all.slice(-MAX_ACTIVE_MESSAGES);
+
+  // Always make room for at least one older page. If the current window is
+  // smaller than the cap, use the remaining capacity before sliding further.
+  const olderBudget = Math.max(50, MAX_ACTIVE_MESSAGES - Math.min(previous.length, MAX_ACTIVE_MESSAGES));
+  const start = Math.max(0, anchorIndex - olderBudget);
+  return all.slice(start, start + MAX_ACTIVE_MESSAGES);
+}
 
 // Keep lazy chunks from looking like a broken/white page on slower phones.
 // This component deliberately uses only inline classes and no lazy imports.
@@ -98,7 +128,6 @@ export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [serverMessages, setServerMessages] = useState<Message[]>([]);
   const [messagesPage, setMessagesPage] = useState<number>(1);
   const [hasMoreMessages, setHasMoreMessages] = useState<boolean>(true);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
@@ -176,19 +205,21 @@ export default function App() {
       setResetToken(initialToken);
     }
 
+    if (!isMobilePlatform()) return;
     let capListener: any = null;
-    try {
+    let cancelled = false;
+    loadCapacitorApp().then((CapApp) => {
+      if (cancelled) return;
       capListener = CapApp.addListener('appUrlOpen', (data: any) => {
         if (data?.url) {
           const deepToken = extractResetTokenFromUrl(data.url);
-          if (deepToken) {
-            setResetToken(deepToken);
-          }
+          if (deepToken) setResetToken(deepToken);
         }
       });
-    } catch (e) {}
+    }).catch(() => {});
 
     return () => {
+      cancelled = true;
       if (capListener && typeof capListener.then === 'function') {
         capListener.then((h: any) => h?.remove?.()).catch(() => {});
       }
@@ -264,10 +295,11 @@ export default function App() {
 
   // Intercept native Tauri window close button (X) to hide instead of exit
   useEffect(() => {
+    if (!isTauriEnvironment()) return;
     let unlisten: (() => void) | null = null;
-    setupWindowCloseRequestedListener().then((fn) => {
+    import('./lib/tauriDesktopService').then(({ setupWindowCloseRequestedListener }) => setupWindowCloseRequestedListener()).then((fn) => {
       if (fn) unlisten = fn;
-    });
+    }).catch(() => {});
     return () => {
       if (unlisten) unlisten();
     };
@@ -406,10 +438,12 @@ export default function App() {
   // Caching mechanism for instant browsing experience (SWR pattern)
   const channelsCache = useRef<Record<string, Channel[]>>({});
   const messagesCache = useRef<Record<string, { items: Message[]; page: number; hasMore: boolean }>>({});
-  const serverMessagesCache = useRef<Record<string, Message[]>>({});
-  const serverMessageFreshnessRef = useRef<Record<string, number>>({});
   const messageCacheFreshnessRef = useRef<Record<string, number>>({});
-  const loadMessagesSeqRef = useRef<number>(0);
+  // Each conversation owns its request generation so a slow response from a
+  // previous channel cannot invalidate or overwrite an unrelated channel.
+  const messageRequestGenerationRef = useRef<Record<string, number>>({});
+  const messageCursorRef = useRef<Record<string, MessageCursor | null>>({});
+  const messageLoadingRef = useRef<Set<string>>(new Set());
   const stagedLoadTimerRef = useRef<any>(null);
   const messageCacheTtlMs = 15000;
 
@@ -442,7 +476,7 @@ export default function App() {
 
   useEffect(() => {
     if (activeChannel) {
-      const isDm = Boolean(activeChannel.server === 'dm' || activeChannel.name?.startsWith('@'));
+      const isDm = isDirectMessageChannel(activeChannel);
       if (isDm) {
         setActiveDmChannel(activeChannel);
       } else {
@@ -708,13 +742,13 @@ export default function App() {
         if (exitTimer) clearTimeout(exitTimer);
         lastBackPressTimeRef.current = 0;
         setExitToast(null);
-        try {
-          CapApp.exitApp();
-        } catch (e) {
-          try {
-            CapApp.minimizeApp();
-          } catch (err) {}
-        }
+          if (isMobilePlatform()) {
+            loadCapacitorApp().then((CapApp) => {
+              try { CapApp.exitApp(); } catch (e) {
+                try { CapApp.minimizeApp(); } catch (err) {}
+              }
+            }).catch(() => {});
+          }
       } else {
         lastBackPressTimeRef.current = now;
         const msg = langRef.current === 'ar' ? 'اضغط رجوع مرة أخرى للخروج' : 'Press back again to exit';
@@ -771,13 +805,11 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
 
     let capListener: any = null;
-    CapApp.addListener('backButton', () => {
-      triggerGlobalBack();
-    }).then((l) => {
-      capListener = l;
-    }).catch((e) => {
-      console.warn('Capacitor backButton notice:', e);
-    });
+    if (isMobilePlatform()) {
+      loadCapacitorApp().then((CapApp) => CapApp.addListener('backButton', () => {
+        triggerGlobalBack();
+      })).then((l) => { capListener = l; }).catch(() => {});
+    }
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
@@ -1144,11 +1176,20 @@ export default function App() {
 
     // 3. Non-blocking background sync from PocketBase
     try {
-      const [userChatServers, allUsers] = await Promise.all([
-        pbService.getUserPrivateChatServers(),
-        pbService.fetchAllUsers(),
-      ]);
+      const userChatServers = await pbService.getUserPrivateChatServers();
       const currentId = currentUser?.id;
+
+      // Resolve only the counterpart profiles needed for visible DMs. The
+      // previous login path fetched the entire user directory before it could
+      // render the DM list.
+      const counterpartIds = Array.from(new Set(
+        userChatServers.flatMap((cs: any) => {
+          const users = cs.users || [cs.user1, cs.user2].filter(Boolean);
+          return users.filter((uid: string) => uid && uid !== currentId);
+        }),
+      ));
+      const counterpartUsers = await Promise.all(counterpartIds.map((id) => pbService.fetchUserById(id)));
+      const usersById = new Map(counterpartUsers.filter(Boolean).map((user) => [user!.id, user!]));
 
       const dynamicDmChannels: Channel[] = [];
       const seenRecipientIds = new Set<string>();
@@ -1156,7 +1197,7 @@ export default function App() {
       for (const cs of userChatServers) {
         const usersInServer = cs.users || [cs.user1, cs.user2].filter(Boolean);
         const otherUserId = usersInServer.find((uid: string) => uid !== currentId) || usersInServer[0];
-        const otherUser = allUsers.find((u) => u.id === otherUserId);
+        const otherUser = usersById.get(otherUserId);
         if (otherUser && !seenRecipientIds.has(otherUser.id)) {
           const chanId = `dm-server-${cs.id}`;
           const isClosed =
@@ -1201,11 +1242,6 @@ export default function App() {
   useEffect(() => {
     if (currentUser) {
       loadAllDmChannels();
-      // Preload heavy SettingsModal chunk in background when idle so opening it is instantaneous
-      const timer = setTimeout(() => {
-        import('./components/SettingsModal').catch(() => {});
-      }, 200);
-      return () => clearTimeout(timer);
     }
   }, [currentUser?.id]);
 
@@ -1231,7 +1267,7 @@ export default function App() {
       localStorage.setItem(`last_active_channel_id_${activeServer.id}`, activeChannel.id);
     }
     if (activeChannel) {
-      const isDm = activeChannel.server === 'dm' || activeChannel.name.startsWith('@');
+      const isDm = isDirectMessageChannel(activeChannel);
       if (isDm) {
         setActiveDmChannel(activeChannel);
       } else {
@@ -1250,7 +1286,7 @@ export default function App() {
 
       let cached = messagesCache.current[activeChannel.id] || offlineCacheService.getCachedMessagesSync(activeChannel.id);
       if (!cached || !Array.isArray(cached.items)) {
-        const isDm = activeChannel.server === 'dm' || activeChannel.name?.startsWith('@') || activeChannel.id.startsWith('dm-');
+        const isDm = isDirectMessageChannel(activeChannel);
         if (isDm) {
           const recipientId = activeChannel.recipientUser?.id;
           const serverId = activeChannel.id.startsWith('dm-server-') ? activeChannel.id.replace('dm-server-', '') : null;
@@ -1274,71 +1310,27 @@ export default function App() {
 
       if (cached && Array.isArray(cached.items)) {
         messagesCache.current[activeChannel.id] = cached;
-        const initial10 = cached.items.slice(Math.max(0, cached.items.length - 10));
-        setMessages(initial10);
-        setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : (cached.items.length > 10));
+         const visibleCached = selectActiveMessageWindow(cached.items);
+        setMessages(visibleCached);
+        setHasMoreMessages(cached.hasMore === true || cached.items.length > visibleCached.length);
         setMessagesPage(cached.page || 1);
         setIsInitialLoadingChannel(false);
-
-        // Smoothly stage the next 10 cached items in the background
-        if (cached.items.length > 10) {
-          stagedLoadTimerRef.current = setTimeout(() => {
-            if (activeChannelRef.current?.id === activeChannel.id) {
-              const next20 = cached.items.slice(Math.max(0, cached.items.length - 20));
-              setMessages((prev) => {
-                if (prev.length >= next20.length) return prev;
-                return mergeMessageListPreservingReferences(prev, next20);
-              });
-            }
-          }, 450);
-        }
       } else {
         setMessages([]);
         setMessagesPage(1);
         setHasMoreMessages(true);
         setIsInitialLoadingChannel(true);
       }
-      loadMessages(activeChannel.id, 1, false, null, 10);
+      loadMessages(activeChannel.id, 1, false, null, 30);
+      const conversationKind = isDirectMessageChannel(activeChannel) ? 'dm' : 'channel';
+      return () => {
+        pbService.cancelMessagePage(activeChannel.id, conversationKind);
+      };
     } else {
       setMessages([]);
       setIsInitialLoadingChannel(false);
     }
   }, [activeChannel?.id]);
-
-  // 5b. Load server-wide messages for ping indicators when active server changes
-  useEffect(() => {
-    if (!activeServer) {
-      setServerMessages([]);
-      return;
-    }
-
-    const serverId = activeServer.id;
-
-    const timer = setTimeout(async () => {
-      const cached = serverMessagesCache.current[serverId];
-      if (cached) {
-        setServerMessages(cached);
-        if (Date.now() - (serverMessageFreshnessRef.current[serverId] || 0) < 30000) {
-          return;
-        }
-      } else {
-        setServerMessages([]);
-      }
-
-      try {
-        const list = await pbService.fetchServerMessages(serverId);
-        serverMessagesCache.current[serverId] = list;
-        serverMessageFreshnessRef.current[serverId] = Date.now();
-        if (activeServerRef.current?.id === serverId) {
-          setServerMessages(list);
-        }
-      } catch (err) {
-        console.warn('Error loading server messages:', err);
-      }
-    }, 150);
-
-    return () => clearTimeout(timer);
-  }, [activeServer?.id]);
 
   // 5c. Global Realtime SSE subscriptions for Server Channels & Direct Messages (Runs whenever user is logged in)
   useEffect(() => {
@@ -1375,30 +1367,8 @@ export default function App() {
         if (fullMsg?.channel) {
           messageCacheFreshnessRef.current[fullMsg.channel] = Date.now();
         }
-        // Only fetch expanded details on 'create' if missing; existing updated messages already have sender/attachments
-        if (e.action === 'create' && (!e.record.expand?.sender || !e.record.expand?.['attachments(message)'])) {
-          pbService.getMessageById(e.record.id).then((fetchedMsg) => {
-            if (fetchedMsg) {
-              if (currentActiveChan && fetchedMsg.channel === currentActiveChan.id) {
-                setMessages((prev) => {
-                  const idx = prev.findIndex((m) => m.id === fetchedMsg.id);
-                  if (idx === -1) return prev;
-                  const prevMsg = prev[idx];
-                  const nextMsg: Message = {
-                    ...prevMsg,
-                    ...fetchedMsg,
-                    reactions: prevMsg.reactions !== undefined ? prevMsg.reactions : fetchedMsg.reactions,
-                    expand: fetchedMsg.expand || prevMsg.expand,
-                  };
-                  if (isSingleMessageEqual(prevMsg, nextMsg)) return prev;
-                  const updated = [...prev];
-                  updated[idx] = nextMsg;
-                  return updated;
-                });
-              }
-            }
-          }).catch(() => {});
-        }
+        // PocketBaseService delivers one normalized expanded message event;
+        // do not issue a second getOne request from the app layer.
 
         const isCurrentlyViewing = !!(currentActiveChan && currentActiveChan.id === fullMsg.channel);
 
@@ -1533,33 +1503,11 @@ export default function App() {
           }
         }
 
-        if (currentServer) {
-          serverMessageFreshnessRef.current[currentServer.id] = Date.now();
-          setServerMessages((prev) => {
-            const existingIdx = prev.findIndex((m) => m.id === fullMsg.id);
-            if (existingIdx === -1) {
-              const updated = [fullMsg, ...prev];
-              serverMessagesCache.current[currentServer.id] = updated;
-              return updated;
-            }
-            const prevMsg = prev[existingIdx];
-            const nextMsg: Message = {
-              ...prevMsg,
-              ...fullMsg,
-              reactions: fullMsg.reactions !== undefined ? fullMsg.reactions : prevMsg.reactions,
-              expand: fullMsg.expand || prevMsg.expand
-            };
-            if (isSingleMessageEqual(prevMsg, nextMsg)) {
-              return prev;
-            }
-            const updated = [...prev];
-            updated[existingIdx] = nextMsg;
-            serverMessagesCache.current[currentServer.id] = updated;
-            return updated;
-          });
-        }
-
         if (currentActiveChan && fullMsg.channel === currentActiveChan.id) {
+          const activeCache = messagesCache.current[currentActiveChan.id];
+          if (activeCache) {
+            activeCache.items = mergeMessagesChronologically(activeCache.items, [fullMsg]);
+          }
           setMessages((prev) => {
             const existingIdx = prev.findIndex(
               (m) =>
@@ -1570,10 +1518,7 @@ export default function App() {
 
             if (existingIdx === -1) {
               const updated = [...prev, fullMsg];
-              if (messagesCache.current[currentActiveChan.id]) {
-                messagesCache.current[currentActiveChan.id].items = updated;
-              }
-              return updated;
+              return selectActiveMessageWindow(updated);
             }
 
             const prevMsg = prev[existingIdx];
@@ -1593,16 +1538,13 @@ export default function App() {
             const updated = [...prev];
             updated[existingIdx] = nextMsg;
 
-            if (messagesCache.current[currentActiveChan.id]) {
-              messagesCache.current[currentActiveChan.id].items = updated;
-            }
-            return updated;
+            return selectActiveMessageWindow(updated);
           });
         } else if (fullMsg.channel) {
           if (messagesCache.current[fullMsg.channel]) {
             const existing = messagesCache.current[fullMsg.channel].items || [];
             if (!existing.some((m) => m.id === fullMsg.id)) {
-              messagesCache.current[fullMsg.channel].items = [...existing, fullMsg];
+              messagesCache.current[fullMsg.channel].items = mergeMessagesChronologically(existing, [fullMsg]);
             }
           }
         }
@@ -1613,19 +1555,16 @@ export default function App() {
         if (e.record?.channel) {
           offlineCacheService.mergeChannelMessages(e.record.channel, [], undefined, undefined, [e.record.id]);
         }
-        if (currentServer) {
-          setServerMessages((prev) => {
-            const updated = MessageDeletionService.transformMessagesOnDeletion(prev, e.record.id, currentLang);
-            serverMessagesCache.current[currentServer.id] = updated;
-            return updated;
-          });
-        }
         if (currentActiveChan && e.record.channel === currentActiveChan.id) {
+          if (messagesCache.current[currentActiveChan.id]) {
+            messagesCache.current[currentActiveChan.id].items = MessageDeletionService.transformMessagesOnDeletion(
+              messagesCache.current[currentActiveChan.id].items,
+              e.record.id,
+              currentLang,
+            );
+          }
           setMessages((prev) => {
             const updated = MessageDeletionService.transformMessagesOnDeletion(prev, e.record.id, currentLang);
-            if (messagesCache.current[currentActiveChan.id]) {
-              messagesCache.current[currentActiveChan.id].items = updated;
-            }
             return updated;
           });
 
@@ -1695,6 +1634,11 @@ export default function App() {
       if (e.action === 'create') {
         const msgWithChannel = { ...fullMsg, channel: targetChanId };
 
+        [currentActiveChan?.id, dmChannelId].filter(Boolean).forEach((key) => {
+          const cache = messagesCache.current[key as string];
+          if (cache) cache.items = mergeMessagesChronologically(cache.items, [msgWithChannel]);
+        });
+
         if (isCurrentlyViewingDM && currentActiveChan) {
           setMessages((prev) => {
             // If message with this real ID already exists in state, do not duplicate
@@ -1739,19 +1683,13 @@ export default function App() {
               return true;
             });
 
-            if (messagesCache.current[currentActiveChan.id]) {
-              messagesCache.current[currentActiveChan.id].items = deduplicated;
-            }
-            if (messagesCache.current[dmChannelId]) {
-              messagesCache.current[dmChannelId].items = deduplicated;
-            }
-            return deduplicated;
+            return selectActiveMessageWindow(deduplicated);
           });
         } else {
           if (messagesCache.current[dmChannelId]) {
             const cachedItems = messagesCache.current[dmChannelId].items || [];
             if (!cachedItems.some((m) => m.id === fullMsg.id)) {
-              messagesCache.current[dmChannelId].items = [...cachedItems, msgWithChannel];
+              messagesCache.current[dmChannelId].items = mergeMessagesChronologically(cachedItems, [msgWithChannel]);
             }
           }
         }
@@ -1860,6 +1798,14 @@ export default function App() {
         }
       } else if (e.action === 'update' && e.record?.id) {
         const updatedRecord = e.record;
+        [currentActiveChan?.id, dmChannelId].filter(Boolean).forEach((key) => {
+          const cache = messagesCache.current[key as string];
+          if (cache) {
+            cache.items = cache.items.map((message) => message.id === updatedRecord.id
+              ? { ...message, ...updatedRecord, channel: targetChanId, expand: updatedRecord.expand || message.expand }
+              : message);
+          }
+        });
         if (isCurrentlyViewingDM) {
           setMessages((prev) => {
             const existingIdx = prev.findIndex((m) => m.id === updatedRecord.id);
@@ -1877,13 +1823,7 @@ export default function App() {
             }
             const updated = [...prev];
             updated[existingIdx] = nextMsg;
-            if (messagesCache.current[currentActiveChan.id]) {
-              messagesCache.current[currentActiveChan.id].items = updated;
-            }
-            if (messagesCache.current[dmChannelId]) {
-              messagesCache.current[dmChannelId].items = updated;
-            }
-            return updated;
+            return selectActiveMessageWindow(updated);
           });
         } else {
           if (messagesCache.current[dmChannelId]) {
@@ -2144,7 +2084,9 @@ export default function App() {
   };
 
   const loadMessages = async (channelId: string, pageNum = 1, append = false, targetMessageId: string | null = null, limit = 10) => {
-    const currentReqSeq = ++loadMessagesSeqRef.current;
+    const currentReqSeq = (messageRequestGenerationRef.current[channelId] || 0) + 1;
+    messageRequestGenerationRef.current[channelId] = currentReqSeq;
+    const isCurrentGeneration = () => messageRequestGenerationRef.current[channelId] === currentReqSeq;
     let canUseFreshCache = false;
     const targetChan = activeChannelRef.current?.id === channelId ? activeChannelRef.current : channels.find((c) => c.id === channelId);
     if (targetChan?.type === 'voice') {
@@ -2155,7 +2097,7 @@ export default function App() {
       return;
     }
     if (!append && pageNum === 1) {
-      const isDm = channelId.startsWith('dm-') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.name?.startsWith('@');
+      const isDm = channelId.startsWith('dm-') || channelId.startsWith('private-') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.name?.startsWith('@');
       let targetUser = activeChannelRef.current?.recipientUser;
       if (!targetUser && isDm) {
         const targetUsername = activeChannelRef.current?.name?.replace(/^@/, '');
@@ -2211,26 +2153,13 @@ export default function App() {
         } catch (e) {}
       }
 
-      if (activeChannelRef.current?.id === channelId && loadMessagesSeqRef.current === currentReqSeq) {
+      if (activeChannelRef.current?.id === channelId && isCurrentGeneration()) {
         if (cached && Array.isArray(cached.items)) {
-          const initial10 = cached.items.slice(Math.max(0, cached.items.length - 10));
-          setMessages((prev) => (areMessagesEqual(prev, initial10) ? prev : initial10));
-          setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : (cached.items.length > 10));
+           const visibleCached = selectActiveMessageWindow(cached.items);
+          setMessages((prev) => (areMessagesEqual(prev, visibleCached) ? prev : visibleCached));
+          setHasMoreMessages(cached.hasMore === true || cached.items.length > visibleCached.length);
           setMessagesPage(cached.page || 1);
           setIsInitialLoadingChannel(false);
-
-          if (cached.items.length > 10) {
-            if (stagedLoadTimerRef.current) clearTimeout(stagedLoadTimerRef.current);
-            stagedLoadTimerRef.current = setTimeout(() => {
-              if (activeChannelRef.current?.id === channelId) {
-                const next20 = cached.items.slice(Math.max(0, cached.items.length - 20));
-                setMessages((prev) => {
-                  if (prev.length >= next20.length) return prev;
-                  return mergeMessageListPreservingReferences(prev, next20);
-                });
-              }
-            }, 450);
-          }
         } else {
           setMessages([]);
           setHasMoreMessages(true);
@@ -2257,132 +2186,75 @@ export default function App() {
       return;
     }
 
-    const isDmChan = activeChannelRef.current?.name.startsWith('@') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.id.startsWith('dm-') || activeServerRef.current?.name === 'Direct Messages' || activeServerRef.current?.name === 'الرسائل الخاصة';
+    const isDmChan = activeChannelRef.current?.name.startsWith('@') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.id.startsWith('dm-') || activeChannelRef.current?.id.startsWith('private-') || activeServerRef.current?.name === 'Direct Messages' || activeServerRef.current?.name === 'الرسائل الخاصة';
     if (isDmChan && activeChannelRef.current) {
-      // Safety watchdog: ensure loading spinner is NEVER displayed indefinitely (failsafe 12s)
       const watchdogTimer = setTimeout(() => {
         if (activeChannelRef.current?.id === channelId) {
           setIsInitialLoadingChannel(false);
           setIsLoadingMore(false);
         }
       }, 12000);
-
       const targetUsername = activeChannelRef.current.name.replace(/^@/, '');
-      if (targetUsername) {
-        let chatServerId = channelId.startsWith('dm-server-') ? channelId.replace(/^dm-server-/, '') : undefined;
-        let targetUser = activeChannelRef.current.recipientUser;
+      let chatServerId = channelId.startsWith('dm-server-') ? channelId.replace(/^dm-server-/, '') : undefined;
+      let targetUser = activeChannelRef.current.recipientUser;
 
-        try {
-          if (append && activeChannelRef.current?.id === channelId) {
-            setIsLoadingMore(true);
-          }
-          if (!targetUser || !targetUser.id) {
-            const foundInDms = allDmChannels.find((c) => c.recipientUser?.username?.toLowerCase() === targetUsername.toLowerCase())?.recipientUser;
-            if (foundInDms) {
-              targetUser = foundInDms;
-            } else {
-              const allUsers = await pbService.fetchAllUsers();
-              targetUser = allUsers.find((u) => u.username.toLowerCase() === targetUsername.toLowerCase());
-            }
-          }
-          if (targetUser) {
-            if (!chatServerId) {
-              const cachedServer = pbService.getCachedPrivateChatServer(targetUser.id);
-              chatServerId = cachedServer?.id;
-            }
-            const dms = await pbService.fetchDirectMessages(targetUser.id, chatServerId, false);
-            if (dms) {
-              const totalDms = dms.length;
-              let countToTake = limit;
-              if (append) {
-                const currentCount = messages.length || limit;
-                countToTake = currentCount + limit;
-              } else {
-                countToTake = Math.max(limit, 10);
-              }
+      try {
+        if (messageLoadingRef.current.has(channelId)) return;
+        messageLoadingRef.current.add(channelId);
+        if (append && activeChannelRef.current?.id === channelId) setIsLoadingMore(true);
+        if (!targetUser?.id && targetUsername) {
+          const foundInDms = allDmChannels.find((c) => c.recipientUser?.username?.toLowerCase() === targetUsername.toLowerCase())?.recipientUser;
+          targetUser = foundInDms || (await pbService.searchUsers(targetUsername)).find((u) => u.username.toLowerCase() === targetUsername.toLowerCase());
+        }
+        if (!targetUser?.id) return;
+        if (!chatServerId) chatServerId = pbService.getCachedPrivateChatServer(targetUser.id)?.id;
+        if (!chatServerId) {
+          const resolved = await pbService.getOrCreatePrivateChatServer(targetUser.id);
+          chatServerId = resolved?.id;
+        }
+        if (!chatServerId) return;
 
-              const initialDms = dms.slice(Math.max(0, totalDms - countToTake));
-              const hasMore = totalDms > countToTake;
+        const cacheKey = `dm-server-${chatServerId}`;
+        const currentDataset = messagesCache.current[cacheKey]?.items || messagesCache.current[channelId]?.items || messages;
+        const oldest = currentDataset.find((m) => !m.id.startsWith('optimistic-') && m.created);
+        const before = append
+          ? (messageCursorRef.current[cacheKey] || (oldest?.created ? { created: oldest.created, id: oldest.id } : null) as MessageCursor | null)
+          : undefined;
+        const result = await pbService.fetchDirectMessagePage(chatServerId, append ? 50 : 30, before || undefined);
+        const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, result.hasMore, pageNum);
+        const cacheData = { items: merged.items, page: pageNum, hasMore: result.hasMore };
+        const visibleWindow = selectActiveMessageWindow(merged.items, currentDataset, append);
+        const hiddenOlderCache = Boolean(visibleWindow[0] && merged.items[0] && visibleWindow[0].id !== merged.items[0].id);
+        const cacheTimestamp = Date.now();
+        [channelId, cacheKey, `dm-user-${targetUser.id}`, targetUser.id].forEach((key) => {
+          messagesCache.current[key] = cacheData;
+          messageCacheFreshnessRef.current[key] = cacheTimestamp;
+          messageCursorRef.current[key] = result.nextCursor;
+        });
 
-              const merged = await offlineCacheService.mergeChannelMessages(channelId, initialDms, hasMore, pageNum);
-
-              const cacheData = {
-                items: initialDms,
-                page: pageNum,
-                hasMore: dms.length > 0 ? hasMore : false
-              };
-              messagesCache.current[channelId] = cacheData;
-              const cacheTimestamp = Date.now();
-              messageCacheFreshnessRef.current[channelId] = cacheTimestamp;
-              if (chatServerId) {
-                messagesCache.current[`dm-server-${chatServerId}`] = cacheData;
-                messageCacheFreshnessRef.current[`dm-server-${chatServerId}`] = cacheTimestamp;
-              }
-              messagesCache.current[`dm-user-${targetUser.id}`] = cacheData;
-              messageCacheFreshnessRef.current[`dm-user-${targetUser.id}`] = cacheTimestamp;
-              if (dms.length === 0) {
-                offlineCacheService.saveCachedMessages(channelId, [], false, 1);
-                if (chatServerId) offlineCacheService.saveCachedMessages(`dm-server-${chatServerId}`, [], false, 1);
-                offlineCacheService.saveCachedMessages(`dm-user-${targetUser.id}`, [], false, 1);
-              }
-
-              const isSameChannel =
-                activeChannelRef.current?.id === channelId ||
-                (chatServerId && activeChannelRef.current?.id === `dm-server-${chatServerId}`) ||
-                (activeChannelRef.current?.recipientUser?.id === targetUser.id);
-
-              if (isSameChannel && (append || loadMessagesSeqRef.current === currentReqSeq)) {
-                setMessages((prev) => {
-                  const pendingOptimistic = prev.filter(
-                    (m) => m.id.startsWith('optimistic-') || (m as any).temp_id
-                  );
-                  if (dms.length === 0) {
-                    return pendingOptimistic;
-                  }
-                  const missingPending = pendingOptimistic.filter(
-                    (p) => !merged.items.some((d) => d.id === p.id || ((p as any).temp_id && (d as any).temp_id === (p as any).temp_id))
-                  );
-                  const incomingWithPending = [...merged.items, ...missingPending];
-                  const updated = mergeMessageListPreservingReferences(prev, incomingWithPending);
-                  return updated;
-                });
-                setHasMoreMessages(dms.length > 0 ? hasMore : false);
-                setMessagesPage(pageNum);
-                setIsInitialLoadingChannel(false);
-                setIsLoadingMore(false);
-
-                // Smoothly schedule next staged 10 messages if hasMore
-                if (!append && hasMore && dms.length > 0) {
-                  if (stagedLoadTimerRef.current) clearTimeout(stagedLoadTimerRef.current);
-                  stagedLoadTimerRef.current = setTimeout(() => {
-                    if (activeChannelRef.current?.id === channelId || (chatServerId && activeChannelRef.current?.id === `dm-server-${chatServerId}`)) {
-                      loadMessages(channelId, 2, true, null, 10);
-                    }
-                  }, 500);
-                }
-              }
-
-              if ((import.meta as any).env?.DEV) {
-                console.log(`[PAGINATION_DEBUG] DM Channel: ${channelId} | Page: ${pageNum} | Total DMs: ${totalDms} | Count Taken: ${countToTake} | Oldest Msg ID: ${merged.items[0]?.id || 'none'} | Has More: ${hasMore}`);
-              }
-              return;
-            }
-          }
-        } catch (e) {
-          console.warn('Error loading direct messages from private_chat_servers:', e);
-        } finally {
-          clearTimeout(watchdogTimer);
-          const isSameTarget =
-            activeChannelRef.current?.id === channelId ||
-            (chatServerId && activeChannelRef.current?.id === `dm-server-${chatServerId}`) ||
-            (targetUser?.id && activeChannelRef.current?.recipientUser?.id === targetUser.id);
-
-          if (isSameTarget) {
-            setIsLoadingMore(false);
-            setIsInitialLoadingChannel(false);
-          }
+        const isSameChannel = activeChannelRef.current?.id === channelId || activeChannelRef.current?.id === cacheKey || activeChannelRef.current?.recipientUser?.id === targetUser.id;
+        if (isSameChannel && isCurrentGeneration()) {
+          setMessages((prev) => {
+            const pending = prev.filter((m) => m.id.startsWith('optimistic-') || (m as any).temp_id);
+            const incoming = [...merged.items, ...pending.filter((p) => !merged.items.some((m) => m.id === p.id || (m as any).temp_id === (p as any).temp_id))];
+            const combined = mergeMessageListPreservingReferences(prev, incoming);
+            return selectActiveMessageWindow(combined, prev, append);
+          });
+          setHasMoreMessages(result.hasMore || hiddenOlderCache);
+          setMessagesPage(pageNum);
+          setIsInitialLoadingChannel(false);
+        }
+      } catch (error) {
+        console.warn('Error loading direct messages:', error);
+      } finally {
+        messageLoadingRef.current.delete(channelId);
+        clearTimeout(watchdogTimer);
+        if (activeChannelRef.current?.id === channelId) {
+          setIsLoadingMore(false);
+          setIsInitialLoadingChannel(false);
         }
       }
+      return;
     }
 
     try {
@@ -2397,9 +2269,10 @@ export default function App() {
         const oldestMsg = nonOptimistic[0];
 
         if (oldestMsg) {
-          const result = await pbService.fetchMessages(channelId, 1, limit, oldestMsg.created, oldestMsg.id);
+          const before = messageCursorRef.current[channelId] || { created: oldestMsg.created!, id: oldestMsg.id };
+          const result = await pbService.fetchMessagePage(channelId, 'channel', 50, before);
 
-          if (result.items.length === 0) {
+          if (result.items.length === 0 && !result.hasMore) {
             // Confirm 0 older messages exist in PocketBase
             if (activeChannelRef.current?.id === channelId) {
               setHasMoreMessages(false);
@@ -2414,13 +2287,14 @@ export default function App() {
               messagesCache.current[channelId]?.page || pageNum
             );
           } else {
-            const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, true, pageNum);
+            const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, result.hasMore, pageNum);
             messageCacheFreshnessRef.current[channelId] = Date.now();
-            
-            // Check if server totalItems indicates more older records exist
-            const hasMore = result.totalItems > result.items.length || result.items.length >= limit;
+            messageCursorRef.current[channelId] = result.nextCursor;
+            const visibleWindow = selectActiveMessageWindow(merged.items, currentDataset, true);
+            const hasHiddenOlderCache = Boolean(visibleWindow[0] && merged.items[0] && visibleWindow[0].id !== merged.items[0].id);
+            const hasMore = result.hasMore || hasHiddenOlderCache;
 
-            if (activeChannelRef.current?.id === channelId && (append || loadMessagesSeqRef.current === currentReqSeq)) {
+            if (activeChannelRef.current?.id === channelId && (append || isCurrentGeneration())) {
               setMessages((prev) => {
                 const pendingOptimistic = prev.filter(
                   (m) => m.id.startsWith('optimistic-') || (m as any).temp_id
@@ -2431,11 +2305,11 @@ export default function App() {
                 const incomingWithPending = [...merged.items, ...missingPending];
                 const updated = mergeMessageListPreservingReferences(prev, incomingWithPending);
                 messagesCache.current[channelId] = {
-                  items: updated,
-                  page: pageNum,
-                  hasMore
-                };
-                return updated;
+                   items: updated,
+                   page: pageNum,
+                    hasMore
+                 };
+                 return selectActiveMessageWindow(updated, prev, true);
               });
               setHasMoreMessages(hasMore);
             } else {
@@ -2447,24 +2321,26 @@ export default function App() {
             }
 
             if ((import.meta as any).env?.DEV) {
-              console.log(`[PAGINATION_DEBUG] Appending Channel Cursor Older: ${oldestMsg.created} | Returned Count: ${result.items.length} | Remaining Older Total: ${result.totalItems} | New Oldest ID: ${result.items[0]?.id || 'none'} | Has More: ${hasMore}`);
+               console.log(`[PAGINATION_DEBUG] Appending Channel Cursor Older: ${oldestMsg.created} | Returned Count: ${result.items.length} | New Oldest ID: ${result.items[0]?.id || 'none'} | Has More: ${hasMore}`);
             }
           }
         } else {
           // Fallback if current dataset is empty
-          const result = await pbService.fetchMessages(channelId, 1, limit);
-          const hasMore = result.totalPages > 1 && result.totalItems > result.items.length;
-          const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, hasMore, 1);
+            const result = await pbService.fetchMessagePage(channelId, 'channel', 30);
+            const hasMore = result.hasMore;
+            const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, hasMore, 1);
+          messageCursorRef.current[channelId] = result.nextCursor;
           messagesCache.current[channelId] = { items: merged.items, page: 1, hasMore };
           messageCacheFreshnessRef.current[channelId] = Date.now();
-          if (activeChannelRef.current?.id === channelId && (append || loadMessagesSeqRef.current === currentReqSeq)) {
-            setMessages((prev) => mergeMessageListPreservingReferences(prev, merged.items));
+          if (activeChannelRef.current?.id === channelId && (append || isCurrentGeneration())) {
+            setMessages((prev) => selectActiveMessageWindow(mergeMessageListPreservingReferences(prev, merged.items), prev, true));
             setHasMoreMessages(hasMore);
           }
         }
       } else {
-        // INITIAL PAGE 1 LOAD: Sync latest 10 messages from PocketBase
-        const result = await pbService.fetchMessages(channelId, 1, limit);
+        // INITIAL LOAD: fetch only the newest page; older history is loaded by
+        // the anchored cursor path when the user reaches the top.
+        const result = await pbService.fetchMessagePage(channelId, 'channel', 30);
 
         let itemsToSet = [...result.items];
         if (targetMessageId && !itemsToSet.some((m) => m.id === targetMessageId)) {
@@ -2478,8 +2354,7 @@ export default function App() {
           }
         }
 
-        // Determine initial hasMore: if totalPages <= 1 or totalItems === 0, page 1 loaded everything -> hasMore = false
-        const hasMore = result.totalPages > 1 && result.totalItems > 0;
+        const hasMore = result.hasMore;
 
         const merged = await offlineCacheService.mergeChannelMessages(channelId, itemsToSet, hasMore, 1);
 
@@ -2489,8 +2364,9 @@ export default function App() {
           hasMore
         };
         messageCacheFreshnessRef.current[channelId] = Date.now();
+        messageCursorRef.current[channelId] = result.nextCursor;
 
-        if (activeChannelRef.current?.id === channelId && (append || loadMessagesSeqRef.current === currentReqSeq)) {
+        if (activeChannelRef.current?.id === channelId && (append || isCurrentGeneration())) {
           setMessages((prev) => {
             const pendingOptimistic = prev.filter(
               (m) => m.id.startsWith('optimistic-') || (m as any).temp_id
@@ -2499,29 +2375,22 @@ export default function App() {
               (p) => !merged.items.some((d) => d.id === p.id || ((p as any).temp_id && (d as any).temp_id === (p as any).temp_id))
             );
             const incomingWithPending = [...merged.items, ...missingPending];
-            const updated = mergeMessageListPreservingReferences(prev, incomingWithPending);
-            messagesCache.current[channelId] = {
-              items: updated,
-              page: 1,
-              hasMore
-            };
-            return updated;
+             const updated = mergeMessageListPreservingReferences(prev, incomingWithPending);
+             messagesCache.current[channelId] = {
+               items: merged.items,
+               page: 1,
+               hasMore
+             };
+             return selectActiveMessageWindow(updated);
           });
           setHasMoreMessages(hasMore);
 
-          // Smoothly schedule next staged 10 messages if hasMore
-          if (!append && hasMore) {
-            if (stagedLoadTimerRef.current) clearTimeout(stagedLoadTimerRef.current);
-            stagedLoadTimerRef.current = setTimeout(() => {
-              if (activeChannelRef.current?.id === channelId) {
-                loadMessages(channelId, 2, true, null, 25);
-              }
-            }, 500);
-          }
+          // Do not issue a hidden second request. The scroll sentinel will
+          // request the next page only when the user asks for older history.
         }
 
         if ((import.meta as any).env?.DEV) {
-          console.log(`[PAGINATION_DEBUG] Initial Server Channel Page Load: Page 1 | Total Server Pages: ${result.totalPages} | Total Items in DB: ${result.totalItems} | Returned Count: ${result.items.length} | Oldest Msg ID: ${merged.items[0]?.id || 'none'} | Has More: ${hasMore}`);
+          console.log(`[PAGINATION_DEBUG] Initial Server Channel Page Load: Returned Count: ${result.items.length} | Oldest Msg ID: ${merged.items[0]?.id || 'none'} | Has More: ${hasMore}`);
         }
       }
       if (activeChannelRef.current?.id === channelId) {
@@ -2547,20 +2416,19 @@ export default function App() {
 
     // Check if we have cached messages that aren't yet in current state
     const cachedItems = messagesCache.current[activeChannel.id]?.items || [];
-    if (cachedItems.length > messages.length) {
-      const neededCount = Math.min(cachedItems.length, messages.length + 25);
-      const slice = cachedItems.slice(Math.max(0, cachedItems.length - neededCount));
-      setMessages((prev) => mergeMessageListPreservingReferences(prev, slice));
-      setHasMoreMessages(
-        messagesCache.current[activeChannel.id]?.hasMore !== undefined
-          ? messagesCache.current[activeChannel.id].hasMore
-          : cachedItems.length > neededCount
-      );
+    const activeFirstIndex = messages[0]?.id ? cachedItems.findIndex((item) => item.id === messages[0].id) : -1;
+    if (cachedItems.length > messages.length && activeFirstIndex > 0) {
+      const cacheWindow = selectActiveMessageWindow(cachedItems, messages, true);
+      setMessages((prev) => selectActiveMessageWindow(mergeMessageListPreservingReferences(prev, cacheWindow), prev, true));
+      const visibleFirstId = cacheWindow[0]?.id;
+      const firstCacheIndex = visibleFirstId ? cachedItems.findIndex((item) => item.id === visibleFirstId) : -1;
+      const remoteHasMore = messagesCache.current[activeChannel.id]?.hasMore === true;
+      setHasMoreMessages((firstCacheIndex > 0) || remoteHasMore);
       return;
     }
 
     const nextPage = messagesPage + 1;
-    await loadMessages(activeChannel.id, nextPage, true, null, 25);
+    await loadMessages(activeChannel.id, nextPage, true, null, 50);
   };
 
   const handleSkipUploadFile = () => {
@@ -2597,7 +2465,7 @@ export default function App() {
     const finalContent = content.trim() === '' ? '  ' : content;
 
     // Check if sending a Direct Message
-    const isDmChannel = activeChannel.name.startsWith('@') || activeServer?.name === 'Direct Messages' || activeServer?.name === 'الرسائل الخاصة';
+    const isDmChannel = isDirectMessageChannel(activeChannel) || activeServer?.name === 'Direct Messages' || activeServer?.name === 'الرسائل الخاصة';
     const targetUsername = isDmChannel ? activeChannel.name.replace(/^@/, '') : '';
 
     const hasAttachment = !!((attachments && attachments.length > 0) || (uploadedAttachments && uploadedAttachments.length > 0));
@@ -2640,15 +2508,17 @@ export default function App() {
       }
     };
 
+    const optimisticCache = messagesCache.current[activeChannel.id];
+    if (optimisticCache) {
+      optimisticCache.items = mergeMessagesChronologically(optimisticCache.items, [optimisticMessage]);
+    }
+
     setMessages((prev) => {
       if (prev.some((m) => m.id === tempId || (m as any).temp_id === tempId)) {
         return prev;
       }
       const updated = [...prev, optimisticMessage];
-      if (messagesCache.current[activeChannel.id]) {
-        messagesCache.current[activeChannel.id].items = updated;
-      }
-      return updated;
+      return selectActiveMessageWindow(updated);
     });
 
     if (isDmChannel) {
@@ -2681,8 +2551,8 @@ export default function App() {
             if (foundInDms) {
               targetUser = foundInDms;
             } else {
-              const allUsers = await pbService.fetchAllUsers();
-              targetUser = allUsers.find((u) => u.username.toLowerCase() === targetUsername.toLowerCase());
+              const matchingUsers = await pbService.searchUsers(targetUsername);
+              targetUser = matchingUsers.find((u) => u.username.toLowerCase() === targetUsername.toLowerCase());
             }
           }
           if (targetUser) {
@@ -2735,7 +2605,7 @@ export default function App() {
             if (k) seen.add(k);
             if (t) seen.add(t);
             return true;
-          });
+          }).slice(-MAX_ACTIVE_MESSAGES);
         });
 
         // Handle pre-uploaded attachments from background upload manager
@@ -2872,19 +2742,20 @@ export default function App() {
         }
 
         // Swap optimistic echo out for real database record
-        let finalMsg = msg;
-        try {
-          finalMsg = await pbService.getMessageById(msg.id);
-        } catch (e) {
-          finalMsg = msg;
+        // The create response is already expanded with sender/reply data and
+        // is also delivered through the single realtime message event. Avoid
+        // fetching the same record a second time after every send.
+        const finalMsg = msg;
+
+        const sentCache = messagesCache.current[activeChannel.id];
+        if (sentCache) {
+          const withoutOptimistic = sentCache.items.filter((message) => message.id !== tempId && (message as any).temp_id !== tempId);
+          sentCache.items = mergeMessagesChronologically(withoutOptimistic, [finalMsg]);
         }
 
         setMessages((prev) => {
           const updated = prev.map((m) => (m.id === tempId || m.id === realMsgId ? finalMsg : m));
-          if (messagesCache.current[activeChannel.id]) {
-            messagesCache.current[activeChannel.id].items = updated;
-          }
-          return updated;
+          return selectActiveMessageWindow(updated);
         });
 
         offlineCacheService.mergeChannelMessages(activeChannel.id, [finalMsg]);
@@ -2903,9 +2774,14 @@ export default function App() {
 
         // Dispatch notifications to target users in PocketBase so offline users receive them in their notifications tab
         try {
-          const allUsers = await pbService.fetchAllUsers();
           const contentLower = (finalMsg.content || '').toLowerCase();
           const targetUserIds = new Set<string>();
+          // Mention matching is the only case that needs a directory-wide
+          // lookup. Avoid a users full-list request for ordinary messages and
+          // resolve DM recipients from the channel/user cache instead.
+          const allUsers = /@[a-z0-9_.-]+/i.test(contentLower)
+            ? await pbService.fetchAllUsers()
+            : [];
 
           // Helper for exact mention matching without partial substring match (e.g. @simlfe matching @simlfe90)
           const isMentionMatch = (text: string, name: string) => {
@@ -2944,7 +2820,9 @@ export default function App() {
 
           // 3. Direct Message
           if (isDmChannel && targetUsername) {
-            const targetUser = allUsers.find((u) => u.username === targetUsername);
+            const targetUser = activeChannel.recipientUser?.id
+              ? activeChannel.recipientUser
+              : (await pbService.searchUsers(targetUsername)).find((u) => u.username.toLowerCase() === targetUsername.toLowerCase());
             if (targetUser && targetUser.id !== currentUser!.id) {
               targetUserIds.add(targetUser.id);
             }
@@ -3025,23 +2903,13 @@ export default function App() {
       };
     };
 
+    if (currentActiveChan?.id && messagesCache.current[currentActiveChan.id]) {
+      messagesCache.current[currentActiveChan.id].items = messagesCache.current[currentActiveChan.id].items.map(updateMsgReactions);
+    }
     setMessages((prev) => {
       const updated = prev.map(updateMsgReactions);
-      if (currentActiveChan?.id && messagesCache.current[currentActiveChan.id]) {
-        messagesCache.current[currentActiveChan.id].items = updated;
-      }
       return updated;
     });
-
-    if (activeServer) {
-      setServerMessages((prev) => {
-        const updated = prev.map(updateMsgReactions);
-        if (activeServer?.id && serverMessagesCache.current[activeServer.id]) {
-          serverMessagesCache.current[activeServer.id] = updated;
-        }
-        return updated;
-      });
-    }
 
     try {
       await pbService.toggleMessageReaction(messageId, emoji, Boolean(isDm));
@@ -3064,9 +2932,6 @@ export default function App() {
         },
         onMessageDeletedStateUpdate: (deletedId) => {
           setMessages((prev) => MessageDeletionService.transformMessagesOnDeletion(prev, deletedId, lang));
-          if (activeServer) {
-            setServerMessages((prev) => MessageDeletionService.transformMessagesOnDeletion(prev, deletedId, lang));
-          }
         }
       });
     } catch (err) {
@@ -3171,7 +3036,7 @@ export default function App() {
       setActiveChannel(channel);
       lastVoiceChannelRef.current = channel;
       if (currentUser && activeRoom?.roomId !== channel.id) {
-        joinVoiceRoom(channel, currentUser, 'voice').catch((e) => {
+        void ensureMediaProvider().then(() => (getRegisteredMediaContext()?.joinVoiceRoom || joinVoiceRoom)(channel, currentUser, 'voice')).catch((e) => {
           console.error('Failed to auto-join voice channel:', e);
         });
       }
@@ -3195,7 +3060,7 @@ export default function App() {
       // DMs can be represented by either the private-chat server id or the
       // recipient id, so resolve all aliases before showing a loading state.
       let cached: any = messagesCache.current[channel.id] || offlineCacheService.getCachedMessagesSync(channel.id);
-      const isDmChannel = channel.server === 'dm' || channel.name.startsWith('@') || channel.id.startsWith('dm-');
+      const isDmChannel = isDirectMessageChannel(channel);
       if ((!cached || !Array.isArray(cached.items)) && isDmChannel) {
         const recipientId = channel.recipientUser?.id;
         const serverId = channel.id.startsWith('dm-server-') ? channel.id.replace('dm-server-', '') : null;
@@ -3216,24 +3081,11 @@ export default function App() {
       }
       if (cached && Array.isArray(cached.items)) {
         messagesCache.current[channel.id] = cached;
-        const initial10 = cached.items.slice(Math.max(0, cached.items.length - 10));
-        setMessages(initial10);
-        setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : (cached.items.length > 10));
+        const visibleCached = selectActiveMessageWindow(cached.items);
+        setMessages(visibleCached);
+        setHasMoreMessages(cached.hasMore === true || cached.items.length > visibleCached.length);
         setMessagesPage(cached.page || 1);
         setIsInitialLoadingChannel(false);
-
-        if (cached.items.length > 10) {
-          if (stagedLoadTimerRef.current) clearTimeout(stagedLoadTimerRef.current);
-          stagedLoadTimerRef.current = setTimeout(() => {
-            if (activeChannelRef.current?.id === channel.id) {
-              const next20 = cached.items.slice(Math.max(0, cached.items.length - 20));
-              setMessages((prev) => {
-                if (prev.length >= next20.length) return prev;
-                return mergeMessageListPreservingReferences(prev, next20);
-              });
-            }
-          }, 450);
-        }
       } else {
         setMessages([]);
         setHasMoreMessages(true);
@@ -3245,18 +3097,20 @@ export default function App() {
 
       // Mark notifications for this channel as read
       if (currentUser?.id) {
-        setNotificationsList((prev) => {
-          const updated = prev.map((n) =>
-            n.channel_id === channel.id || (channel.server === 'dm' && n.type === 'dm' && (n.private_chat_id === channel.id.replace('dm-server-', '') || n.channel_name === channel.name))
-              ? { ...n, read: true }
-              : n
-          );
+        const updated = notificationsList.map((n) =>
+          n.channel_id === channel.id || (isDirectMessageChannel(channel) && n.type === 'dm' && (n.private_chat_id === channel.id.replace('dm-server-', '') || n.channel_name === channel.name))
+            ? { ...n, read: true }
+            : n
+        );
+        if (updated.some((notification, index) => notification.read !== notificationsList[index]?.read)) {
+          setNotificationsList(updated);
+          // Keep network I/O outside the state updater and avoid rewriting the
+          // full notification array on a no-op navigation.
           pbService.updateUserNotifications(currentUser.id, updated);
-          return updated;
-        });
+        }
       }
 
-      if (channel.server === 'dm' || channel.name.startsWith('@')) {
+      if (isDirectMessageChannel(channel)) {
         setActiveDmChannel(channel);
       } else {
         setActiveServerChannel(channel);
@@ -3410,7 +3264,7 @@ export default function App() {
   const handleUpdateChannelInChat = useCallback((updated: Channel) => {
     setChannels((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     setActiveChannel(updated);
-    if (updated.server === 'dm' || updated.name.startsWith('@')) {
+    if (isDirectMessageChannel(updated)) {
       setActiveDmChannel(updated);
     } else {
       setActiveServerChannel(updated);
@@ -3508,14 +3362,14 @@ export default function App() {
 
       if (cached && Array.isArray(cached.items)) {
         messagesCache.current[dmChannel.id] = cached;
-        const initialCached = cached.items.slice(Math.max(0, cached.items.length - 20));
+        const initialCached = selectActiveMessageWindow(cached.items);
         setMessages(initialCached);
-        setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : (cached.items.length > initialCached.length));
+        setHasMoreMessages(cached.hasMore === true || cached.items.length > initialCached.length);
         setMessagesPage(cached.page || 1);
         setIsInitialLoadingChannel(false);
       } else {
         setMessages([]);
-        setHasMoreMessages(false);
+        setHasMoreMessages(true);
         setMessagesPage(1);
         setIsInitialLoadingChannel(true);
       }
@@ -3543,52 +3397,9 @@ export default function App() {
           setActiveChannel((curr) => (curr?.id === initialDmChannelId || curr?.id === realDmChannelId ? resolvedDmChannel : curr));
           setActiveDmChannel((curr) => (curr?.id === initialDmChannelId || curr?.id === realDmChannelId ? resolvedDmChannel : curr));
 
-          const dms = await pbService.fetchDirectMessages(targetUser.id, privateChatServer?.id, false);
-          if (dms && dms.length > 0) {
-            const totalDms = dms.length;
-            const limit = 15;
-            const initialDms = dms.slice(Math.max(0, totalDms - limit));
-            const hasMore = totalDms > limit;
-
-            const cacheData = {
-              items: initialDms,
-              page: 1,
-              hasMore
-            };
-            messagesCache.current[realDmChannelId] = cacheData;
-            messagesCache.current[initialDmChannelId] = cacheData;
-
-            setActiveChannel((curr) => {
-              if (curr?.id === realDmChannelId || curr?.id === initialDmChannelId) {
-                setMessages(initialDms);
-                setHasMoreMessages(hasMore);
-                setMessagesPage(1);
-                setIsInitialLoadingChannel(false);
-              }
-              return curr;
-            });
-          } else {
-            const emptyCache = {
-              items: [],
-              page: 1,
-              hasMore: false
-            };
-            messagesCache.current[realDmChannelId] = emptyCache;
-            messagesCache.current[initialDmChannelId] = emptyCache;
-            offlineCacheService.saveCachedMessages(realDmChannelId, [], false, 1);
-            offlineCacheService.saveCachedMessages(initialDmChannelId, [], false, 1);
-            setActiveChannel((curr) => {
-              if (curr?.id === realDmChannelId || curr?.id === initialDmChannelId) {
-                setMessages([]);
-                setHasMoreMessages(false);
-                setMessagesPage(1);
-                setIsInitialLoadingChannel(false);
-              }
-              return curr;
-            });
-            setIsInitialLoadingChannel(false);
-          }
-
+          // The active-channel effect owns message loading. Avoid a second
+          // 40-record DM query here, which used to race and overwrite the
+          // cursor/cache state established by the real loader.
           loadAllDmChannels();
         } catch (err) {
           console.warn('Background DM resolution error:', err);
@@ -3616,7 +3427,12 @@ export default function App() {
       };
 
       if (currentUser) {
-        startDmCall(targetUser, currentUser, dmChannel, mode);
+        // LiveKit is intentionally deferred from the initial web bundle, but
+        // a first-call click must still execute instead of hitting the bridge's
+        // temporary no-op context while the media chunk is mounting.
+        await ensureMediaProvider();
+        const media = getRegisteredMediaContext();
+        await (media?.startDmCall || startDmCall)(targetUser, currentUser, dmChannel, mode);
       }
       setActiveCallMode(mode);
 
@@ -3635,7 +3451,7 @@ export default function App() {
     }
 
     // 2. Active channel is DM or starts with @
-    if (activeChannel?.server === 'dm' || activeChannel?.name.startsWith('@') || activeChannel?.id.startsWith('dm-')) {
+    if (isDirectMessageChannel(activeChannel)) {
       if (activeChannel.recipientUser) {
         handleStartCallDm(activeChannel.recipientUser, mode);
         return;
@@ -3700,7 +3516,7 @@ export default function App() {
         setActiveVoiceChannel(voiceChan);
         lastVoiceChannelRef.current = voiceChan;
         if (currentUser) {
-          joinVoiceRoom(voiceChan, currentUser, mode).catch((err) => {
+          void ensureMediaProvider().then(() => (getRegisteredMediaContext()?.joinVoiceRoom || joinVoiceRoom)(voiceChan, currentUser, mode)).catch((err) => {
             console.error('Failed to join voice channel from call button:', err);
           });
         }
@@ -3754,7 +3570,7 @@ export default function App() {
   }, [activeRoom, activeChannel, activeServer, channels]);
 
   const handleLogout = () => {
-    realtimeMediaProvider.disconnect().catch(() => {});
+    leaveRoomOrCall().catch(() => {});
     wsService.disconnect();
     offlineCacheService.clearUserCache();
     pbService.logout();
@@ -3762,7 +3578,6 @@ export default function App() {
     setServers([]);
     setChannels([]);
     setMessages([]);
-    setServerMessages([]);
     setActiveServer(null);
     setActiveChannel(null);
     setActiveVoiceChannel(null);
@@ -4421,7 +4236,7 @@ export default function App() {
                     const currentChatChannel = activeChannel || activeServerChannel || activeDmChannel;
                     if (!currentChatChannel) return null;
 
-                    const isDm = Boolean(currentChatChannel.server === 'dm' || currentChatChannel.name.startsWith('@'));
+                    const isDm = isDirectMessageChannel(currentChatChannel);
                     const targetServer = !isDm
                       ? (servers.find((s) => s.id === currentChatChannel.server || s.id === (currentChatChannel as any).server_id) ||
                          (activeServer?.id === currentChatChannel.server ? activeServer : undefined) ||
@@ -4441,7 +4256,6 @@ export default function App() {
                     return (
                       <Suspense fallback={<AppLoadingFallback compact />}>
                         <ChatPanel
-                          key={`chat-panel-${currentChatChannel.id}`}
                           isActive={true}
                           isInitialLoading={Boolean(isInitialLoadingChannel && (!cachedEntry || !Array.isArray(cachedEntry.items)))}
                           channel={currentChatChannel}
@@ -4600,7 +4414,7 @@ export default function App() {
                     user={selectedUserProfile.id === currentUser?.id ? (currentUser as User) : selectedUserProfile}
                     currentUser={currentUser || undefined}
                     currentServer={
-                      (!isGlobalSelfProfile && !showDiscoveryCenter && activeServer && activeChannel && activeChannel.server === activeServer.id && activeChannel.server !== 'dm' && !activeChannel.name.startsWith('@'))
+                      (!isGlobalSelfProfile && !showDiscoveryCenter && activeServer && activeChannel && activeChannel.server === activeServer.id && !isDirectMessageChannel(activeChannel))
                         ? activeServer
                         : undefined
                     }

@@ -1,7 +1,7 @@
 import { LocalNotifications, PermissionStatus } from '@capacitor/local-notifications';
 import { NotificationItem } from '../types';
 import { playPingSound } from '../lib/sounds';
-import { showAndFocusWindow } from '../lib/tauriDesktopService';
+import { showAndFocusWindow } from '../lib/nativePlatform';
 import { parseCallLog, getCallLogSnippet } from './callLogService';
 
 type NotificationTapListener = (notification: NotificationItem) => void;

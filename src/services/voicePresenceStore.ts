@@ -38,50 +38,10 @@ class VoicePresenceStore {
 
     this.initWebSocketListener();
     this.initBroadcastChannel();
-    this.initPocketBaseSubscription();
+    // Voice presence is ephemeral. WebSocket/BroadcastChannel are the only
+    // live sources; PocketBase calls records are reserved for call lifecycle.
     this.initUnloadListeners();
     this.startHeartbeatAndPruning();
-    this.fetchInitialPresences();
-  }
-
-  private async fetchInitialPresences() {
-    try {
-      const records = await pbService.fetchVoicePresences();
-      if (Array.isArray(records)) {
-        const currentAuthUser = pbService.getCurrentUser();
-        records.forEach((r) => {
-          if (r.channelId && r.userId) {
-            // Strict Check for Local User
-            if (currentAuthUser && r.userId === currentAuthUser.id) {
-              if (!this.localParticipant || r.channelId !== this.localParticipant.channelId) {
-                // Ignore and delete stale record from PocketBase
-                pbService.deleteVoicePresence(r.userId).catch(() => {});
-                return;
-              }
-            }
-
-            // Strict Check for Remote User: If user is already active in another channel with a newer or current state, ignore
-            const activeState = this.userChannelStateMap.get(r.userId);
-            if (activeState && activeState.currentChannelId !== r.channelId) {
-              return;
-            }
-
-            this.handlePresenceEvent({
-              status: 'joined',
-              ...r
-            });
-          }
-        });
-      }
-    } catch (e) {}
-  }
-
-  private initPocketBaseSubscription() {
-    try {
-      pbService.subscribeToVoicePresences((evt) => {
-        this.handlePresenceEvent(evt);
-      });
-    } catch (e) {}
   }
 
   private initUnloadListeners() {
@@ -98,7 +58,6 @@ class VoicePresenceStore {
         };
         wsService.send(msg as any);
         try { this.bc?.postMessage(msg); } catch (e) {}
-        pbService.deleteVoicePresence(prev.userId).catch(() => {});
       }
     };
 
@@ -122,17 +81,13 @@ class VoicePresenceStore {
     } catch (e) {}
   }
 
-  private lastDbSyncTime: number = 0;
-
   private startHeartbeatAndPruning() {
     if (typeof window === 'undefined') return;
 
-    let tick = 0;
     // Prune stale participants (> 35s without heartbeat) & broadcast local presence (every 10s)
     const PRESENCE_GRACE_PERIOD_MS = 35000;
 
     this.pruneTimer = setInterval(() => {
-      tick++;
       const now = Date.now();
       let changed = false;
 
@@ -155,15 +110,10 @@ class VoicePresenceStore {
         this.notify();
       }
 
-      // Relaxed fallback sync: only refresh if actively in a voice channel, tab is visible, and every 60s
-      if (this.localParticipant && tick % 6 === 0 && (typeof document === 'undefined' || !document.hidden)) {
-        this.fetchInitialPresences();
-      }
-
       // Heartbeat for local participant if connected (broadcasts every 10s)
       if (this.localParticipant) {
         this.localParticipant.lastHeartbeat = Date.now();
-        this.broadcastSelfPresence(this.localParticipant, false);
+        this.broadcastSelfPresence(this.localParticipant);
       }
     }, 10000);
   }
@@ -339,7 +289,6 @@ class VoicePresenceStore {
         };
         wsService.send(msg as any);
         try { this.bc?.postMessage(msg); } catch (e) {}
-        pbService.deleteVoicePresence(prev.userId).catch(() => {});
 
         // Synchronously remove local user from all channels in store
         this.store.forEach((channelMap, cId) => {
@@ -365,7 +314,6 @@ class VoicePresenceStore {
       };
       wsService.send(msg as any);
       try { this.bc?.postMessage(msg); } catch (e) {}
-      pbService.deleteVoicePresence(prev.userId).catch(() => {});
 
       this.store.forEach((channelMap, cId) => {
         if (cId !== info.channelId && channelMap.has(prev.userId)) {
@@ -391,7 +339,7 @@ class VoicePresenceStore {
     this.notify();
   }
 
-  public broadcastSelfPresence(info: VoiceParticipantInfo, forceDbSync = true) {
+  public broadcastSelfPresence(info: VoiceParticipantInfo) {
     const msg = {
       type: 'voice_presence',
       channelId: info.channelId,
@@ -411,12 +359,6 @@ class VoicePresenceStore {
     wsService.send(msg as any);
     try { this.bc?.postMessage(msg); } catch (e) {}
 
-    // Only write to PocketBase DB on state changes or after at least 60 seconds
-    const now = Date.now();
-    if (forceDbSync || (now - this.lastDbSyncTime > 60000)) {
-      this.lastDbSyncTime = now;
-      pbService.syncVoicePresence(info).catch(() => {});
-    }
   }
 
   public queryAllPresence(serverId?: string) {
@@ -426,7 +368,6 @@ class VoicePresenceStore {
     };
     wsService.send(msg as any);
     try { this.bc?.postMessage(msg); } catch (e) {}
-    this.fetchInitialPresences();
   }
 
   public getLocalPresence(): VoiceParticipantInfo | null {

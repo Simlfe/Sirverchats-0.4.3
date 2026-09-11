@@ -3,6 +3,7 @@ import { MessageDeletionService } from './messageDeletionService';
 
 const DB_NAME = 'SirverOfflineCacheDB';
 const DB_VERSION = 1;
+const MESSAGE_CACHE_BUDGET_BYTES = 100 * 1024 * 1024;
 
 const STORES = {
   SERVERS: 'servers',
@@ -19,6 +20,46 @@ class OfflineCacheService {
   private memChannels: Map<string, Channel[]> = new Map();
   private memDmChannels: Map<string, Channel[]> = new Map();
   private memMessages: Map<string, { items: Message[]; hasMore: boolean; page: number; lastSyncTime: number }> = new Map();
+  private messageCacheLru: Map<string, { bytes: number; lastUsed: number }> = new Map();
+  private messageCacheBytes = 0;
+
+  private estimateMessageBytes(messages: Message[]): number {
+    try {
+      return Math.max(1, JSON.stringify(messages).length * 2);
+    } catch {
+      return messages.length * 512;
+    }
+  }
+
+  private touchMessageCache(channelId: string, messages?: Message[]) {
+    const current = this.messageCacheLru.get(channelId);
+    if (current) {
+      current.lastUsed = Date.now();
+      return;
+    }
+    const bytes = this.estimateMessageBytes(messages || this.memMessages.get(channelId)?.items || []);
+    this.messageCacheLru.set(channelId, { bytes, lastUsed: Date.now() });
+    this.messageCacheBytes += bytes;
+  }
+
+  private evictMessageCacheIfNeeded(protectedKey?: string) {
+    if (this.messageCacheBytes <= MESSAGE_CACHE_BUDGET_BYTES) return;
+    const candidates = Array.from(this.messageCacheLru.entries())
+      .filter(([key]) => key !== protectedKey)
+      .sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
+    for (const [key, entry] of candidates) {
+      if (this.messageCacheBytes <= MESSAGE_CACHE_BUDGET_BYTES) break;
+      this.messageCacheLru.delete(key);
+      this.messageCacheBytes = Math.max(0, this.messageCacheBytes - entry.bytes);
+      this.memMessages.delete(key);
+      // Eviction only removes a local page. Its hasMore flag is never changed,
+      // so a later visit can continue fetching remote history with a cursor.
+      this.getDB().then((db) => {
+        const tx = db.transaction(STORES.MESSAGES, 'readwrite');
+        tx.objectStore(STORES.MESSAGES).delete(key);
+      }).catch(() => {});
+    }
+  }
 
   private getDB(): Promise<IDBDatabase> {
     if (this.dbPromise) return this.dbPromise;
@@ -250,7 +291,9 @@ class OfflineCacheService {
     page: number;
     lastSyncTime: number;
   } | null {
-    return this.memMessages.get(channelId) || null;
+    const data = this.memMessages.get(channelId) || null;
+    if (data) this.touchMessageCache(channelId, data.items);
+    return data;
   }
 
   async getCachedMessages(channelId: string): Promise<{
@@ -277,6 +320,7 @@ class OfflineCacheService {
               lastSyncTime: req.result.lastSyncTime || 0,
             };
             this.memMessages.set(channelId, data);
+            this.touchMessageCache(channelId, data.items);
             resolve(data);
           } else {
             resolve(null);
@@ -303,6 +347,11 @@ class OfflineCacheService {
       lastSyncTime: Date.now(),
     };
     this.memMessages.set(channelId, data);
+    const previous = this.messageCacheLru.get(channelId);
+    if (previous) this.messageCacheBytes = Math.max(0, this.messageCacheBytes - previous.bytes);
+    this.messageCacheLru.set(channelId, { bytes: this.estimateMessageBytes(messages), lastUsed: Date.now() });
+    this.messageCacheBytes += this.messageCacheLru.get(channelId)!.bytes;
+    this.evictMessageCacheIfNeeded(channelId);
 
     // Persist to IndexedDB asynchronously in the background without blocking the UI
     try {
@@ -377,15 +426,16 @@ class OfflineCacheService {
       }
     }
 
-    // Sort strictly by created timestamp ascending
+    // Sort chronologically with the record id as a deterministic tie-breaker.
     const sortedList = Array.from(existingMap.values()).sort((a, b) => {
       const tA = new Date(a.created || 0).getTime();
       const tB = new Date(b.created || 0).getTime();
-      return tA - tB;
+      if (tA !== tB) return tA - tB;
+      return a.id.localeCompare(b.id);
     });
-
-    // Keep most recent 150 messages for cache efficiency and fast IndexedDB writes
-    const mergedList = sortedList.length > 150 ? sortedList.slice(sortedList.length - 150) : sortedList;
+    // Never discard older pages here. Pagination owns the memory window and
+    // this store must remain a lossless source for history and offline reads.
+    const mergedList = sortedList;
 
     const finalHasMore = hasMore !== undefined ? hasMore : cached.hasMore;
     const finalPage = page !== undefined ? Math.max(page, cached.page) : cached.page;
@@ -460,7 +510,8 @@ class OfflineCacheService {
     const mergedList = Array.from(existingMap.values()).sort((a, b) => {
       const tA = new Date(a.created || 0).getTime();
       const tB = new Date(b.created || 0).getTime();
-      return tA - tB;
+      if (tA !== tB) return tA - tB;
+      return a.id.localeCompare(b.id);
     });
 
     const finalHasMore = hasMore !== undefined ? hasMore : cached.hasMore;
@@ -519,6 +570,9 @@ class OfflineCacheService {
   }
 
   async clearUserCache(): Promise<void> {
+    this.memMessages.clear();
+    this.messageCacheLru.clear();
+    this.messageCacheBytes = 0;
     try {
       const db = await this.getDB();
       const stores = [

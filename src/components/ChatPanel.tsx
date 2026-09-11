@@ -23,7 +23,7 @@ import {
   createRealFileFromLocalPath,
   isAndroidPlatform,
   isMobilePlatform,
-} from "../lib/tauriDesktopService";
+} from "../lib/nativePlatform";
 import { cleanFilename } from "../lib/audioMetadata";
 import { useBackHandler } from "../services/backStackManager";
 import {
@@ -505,6 +505,12 @@ export function getAttachmentUrl(
   return `${pbService.getServerUrl()}/api/files/${coll}/${recordId}/${fn}`;
 }
 
+export function getAttachmentThumbnailUrl(attachment: any, size = '480x0') {
+  const url = getAttachmentUrl(attachment);
+  if (!url || url.startsWith('blob:') || url.startsWith('data:') || !url.includes('/api/files/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}thumb=${encodeURIComponent(size)}`;
+}
+
 
 function ChatPanel({
   isActive = true,
@@ -684,7 +690,6 @@ function ChatPanel({
     useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [channelSearchQuery, setChannelSearchQuery] = useState("");
-  const [isSwitchingChannel, setIsSwitchingChannel] = useState(false);
   const [isInitialLoadReady, setIsInitialLoadReady] = useState(false);
 
   // Blocked user messages reveal state
@@ -909,17 +914,9 @@ function ChatPanel({
       setIsInitialLoadReady(true);
       requestAnimationFrame(() => {
         applyInitialScroll();
-        requestAnimationFrame(() => {
-          applyInitialScroll();
-          setTimeout(() => {
-            applyInitialScroll();
-            if (
-              initialChannelLoadLockRef.current.chanId === channel.id
-            ) {
-              initialChannelLoadLockRef.current.active = false;
-            }
-          }, 40);
-        });
+        if (initialChannelLoadLockRef.current.chanId === channel.id) {
+          initialChannelLoadLockRef.current.active = false;
+        }
       });
       return;
     }
@@ -956,6 +953,7 @@ function ChatPanel({
   };
 
   const isFetchingMoreRef = useRef<boolean>(false);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const isPanelAnimatingRef = useRef<boolean>(false);
   const itemHeightsRef = useRef<Map<string, number>>(new Map());
   const virtualRangeRef = useRef({
@@ -1029,6 +1027,23 @@ function ChatPanel({
     getLiveViewportAnchor,
   ]);
 
+  // A top sentinel makes older-history loading deterministic on touch devices
+  // where a scroll event can skip the pixel threshold. The callback remains
+  // single-flight guarded by handleLoadMore.
+  useEffect(() => {
+    const root = scrollRef.current;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void handleLoadMore();
+      },
+      { root, rootMargin: '500px 0px 0px 0px', threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [channel.id, handleLoadMore]);
+
   const preloadedMediaUrlsRef = useRef<Set<string>>(new Set());
   const preloadMediaForRangeRef = useRef<(startIdx: number, endIdx: number) => void>(() => {});
 
@@ -1058,7 +1073,7 @@ function ChatPanel({
       const approxRatio = Math.max(0, Math.min(1, scrollTop / (scrollHeight - clientHeight || 1)));
       const approxTotal = scrollHeight / 80;
       const centerIndex = Math.round(approxRatio * approxTotal);
-      preloadMediaForRangeRef.current(centerIndex - 35, centerIndex + 45);
+      preloadMediaForRangeRef.current(centerIndex - 2, centerIndex + 4);
     }
 
     // Synchronously check if user is scrolling upward or moving away from bottom
@@ -2493,6 +2508,8 @@ function ChatPanel({
           if (!msg) continue;
 
           const rawAtts = [
+            ...(msg.expand?.["attachments_via_message"] || []),
+            ...(msg.expand?.["private_attachments_via_message"] || []),
             ...(msg.expand?.["attachments(message)"] || []),
             ...(msg.expand?.["private_attachments(message)"] || []),
             ...(msg.expand?.attachments || []),
@@ -2508,14 +2525,16 @@ function ChatPanel({
                 att.collectionName ||
                 att["@collectionName"] ||
                 (att.isPrivate || isDm ? "private_attachments" : "attachments");
-              const url = getAttachmentUrl({
+              const url = getAttachmentThumbnailUrl({
                 ...att,
                 collectionName: normColl,
                 type: normType,
               });
               if (url && !preloadedMediaUrlsRef.current.has(url)) {
                 preloadedMediaUrlsRef.current.add(url);
-                preloadUploadedImage(url, 960, 720).catch(() => {});
+                // Only warm a server-side thumbnail. Full-size decoding is
+                // deferred until the image actually enters the viewport.
+                preloadUploadedImage(url, 480, 360).catch(() => {});
               }
             }
           }
@@ -2558,8 +2577,8 @@ function ChatPanel({
   // Eagerly prefetch media for recent messages when messages or active channel change
   useEffect(() => {
     if (!sortedMessages || sortedMessages.length === 0) return;
-    const start = Math.max(0, sortedMessages.length - 40);
-    preloadMediaForRange(start, sortedMessages.length);
+    const start = Math.max(0, sortedMessages.length - 4);
+    preloadMediaForRange(start, Math.min(sortedMessages.length, start + 4));
   }, [sortedMessages, channel.id, preloadMediaForRange]);
 
   const blockedClustersMap = React.useMemo(() => {
@@ -3925,7 +3944,6 @@ function ChatPanel({
         }
       }
       prevChannelIdRef.current = currentChanId;
-      setIsSwitchingChannel(false);
     }
 
     if (!isActive) {
@@ -4048,7 +4066,7 @@ function ChatPanel({
       if (initialChannelLoadLockRef.current.chanId === channel.id) {
         initialChannelLoadLockRef.current.active = false;
       }
-    }, 4000);
+    }, 1500);
     return () => window.clearTimeout(timeoutId);
   }, [channel.id, isActive, isInitialLoadReady]);
 
@@ -4521,7 +4539,7 @@ function ChatPanel({
       onDrop={handleDrop}
       className={`absolute inset-0 flex flex-col min-w-0 h-full transition-all duration-150 ease-out ${panelBgClass} ${
         isDragOver ? "ring-2 ring-accent ring-inset bg-accent/10" : ""
-      } ${isSwitchingChannel ? "opacity-0 scale-[0.995]" : "opacity-100 scale-100"} ${
+      } ${
         !isActive ? "hidden pointer-events-none" : "animate-in fade-in duration-150 ease-out"
       }`}
       style={{ display: isActive ? "flex" : "none" }}
@@ -4840,16 +4858,13 @@ function ChatPanel({
             style={{
               overflowAnchor: "auto",
             }}
-            className={`flex-1 overflow-y-auto p-6 flex flex-col gap-0 transition-opacity duration-200 ease-out chat-scroll-container ${
-              isInitialLoadReady
-                ? "opacity-100"
-                : "opacity-0 pointer-events-none"
-            } ${
+            className={`flex-1 overflow-y-auto p-6 flex flex-col gap-0 transition-opacity duration-200 ease-out chat-scroll-container opacity-100 ${
               chatSettings?.showScrollInChats
                 ? "scrollbar-thin"
                 : "scrollbar-none"
             }`}
           >
+            <div ref={loadMoreSentinelRef} aria-hidden="true" className="h-px w-full shrink-0" />
             {/* Top Indicator */}
             {sortedMessages.length > 0 && (
               <div className="flex justify-center py-2 shrink-0 select-none">
@@ -5123,6 +5138,8 @@ function ChatPanel({
                   channel?.recipientUser || (channel as any)?.is_private,
                 );
                 const rawAtts = [
+                  ...(msg.expand?.["attachments_via_message"] || []),
+                  ...(msg.expand?.["private_attachments_via_message"] || []),
                   ...(msg.expand?.["attachments(message)"] || []),
                   ...(msg.expand?.["private_attachments(message)"] || []),
                   ...(msg.expand?.attachments || []),
@@ -5948,7 +5965,7 @@ function ChatPanel({
                                                   >
                                                     {isImage ? (
                                                       <UploadedImagePreview
-                                                        src={downloadUrl}
+                                                        src={getAttachmentThumbnailUrl(attach, "300x300")}
                                                         alt="Attachment"
                                                         maxPreviewWidth={300}
                                                         maxPreviewHeight={300}
@@ -6005,8 +6022,9 @@ function ChatPanel({
                                                 ),
                                               ) ? (
                                                 <img
-                                                  src={getAttachmentUrl(
+                                                  src={getAttachmentThumbnailUrl(
                                                     nonAudioAttachments[3],
+                                                    "300x300",
                                                   )}
                                                   alt="Attachment"
                                                   loading="eager"
@@ -6063,7 +6081,7 @@ function ChatPanel({
                                                 >
                                                   {isImage ? (
                                                     <UploadedImagePreview
-                                                      src={downloadUrl}
+                                                      src={getAttachmentThumbnailUrl(attach, "300x300")}
                                                       alt="Attachment"
                                                       maxPreviewWidth={300}
                                                       maxPreviewHeight={300}
@@ -6203,7 +6221,7 @@ function ChatPanel({
                                               >
                                                 <div className="relative w-fit max-w-full flex items-center justify-center">
                                                   <UploadedImagePreview
-                                                    src={downloadUrl}
+                                                    src={getAttachmentThumbnailUrl(attach, "960x720")}
                                                     alt="Attachment"
                                                     width={attach.width}
                                                     height={attach.height}
@@ -8145,7 +8163,7 @@ function ChatPanel({
                         >
                           {isImage ? (
                             <UploadedImagePreview
-                              src={downloadUrl}
+                              src={getAttachmentThumbnailUrl(attach, "400x400")}
                               alt={attach.file}
                               maxPreviewWidth={400}
                               maxPreviewHeight={400}

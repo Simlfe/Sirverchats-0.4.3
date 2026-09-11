@@ -1,7 +1,7 @@
 import { pbService } from '../pocketbase';
 import { AppUpdateRecord } from '../types';
 import { getCachedUserSettings } from '../lib/userSettings';
-import { isTauriEnvironment } from '../lib/tauriDesktopService';
+import { isTauriEnvironment } from '../lib/nativePlatform';
 import { downloadManager, DownloadItem, getBlobFromDB } from './downloadManager';
 
 import { CURRENT_APP_VERSION } from '../config/version';

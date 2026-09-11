@@ -1,6 +1,6 @@
 import React from 'react';
 import { ExternalLink, Play, Film, MessageSquare, Video, Share2 } from 'lucide-react';
-import { openExternalUrl } from '../lib/tauriDesktopService';
+import { openExternalUrl } from '../lib/nativePlatform';
 
 export interface SocialEmbedProps {
   url: string;

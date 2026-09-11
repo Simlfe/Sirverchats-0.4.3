@@ -21,8 +21,8 @@ export function isSingleMessageEqual(p: Message, n: Message): boolean {
   }
 
   // Compare attachments count
-  const pAtts = ((p as any).attachments || p.expand?.['attachments(message)'] || []) as any[];
-  const nAtts = ((n as any).attachments || n.expand?.['attachments(message)'] || []) as any[];
+  const pAtts = ((p as any).attachments || p.expand?.['attachments_via_message'] || p.expand?.['private_attachments_via_message'] || p.expand?.['attachments(message)'] || p.expand?.['private_attachments(message)'] || []) as any[];
+  const nAtts = ((n as any).attachments || n.expand?.['attachments_via_message'] || n.expand?.['private_attachments_via_message'] || n.expand?.['attachments(message)'] || n.expand?.['private_attachments(message)'] || []) as any[];
   if (pAtts.length !== nAtts.length) return false;
 
   return true;

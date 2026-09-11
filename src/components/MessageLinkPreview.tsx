@@ -215,7 +215,7 @@ export const MessageLinkPreviewCard: React.FC<MessageLinkPreviewProps> = React.m
           )}
 
           {/* Attachment indicator if any */}
-          {(targetMessage.attachments || targetMessage.expand?.['attachments(message)']) && (
+          {(targetMessage.attachments || targetMessage.expand?.['attachments_via_message'] || targetMessage.expand?.['private_attachments_via_message'] || targetMessage.expand?.['attachments(message)']) && (
             <div className="flex items-center gap-1 text-[10px] font-semibold text-accent pl-8 mt-0.5">
               <PaperclipIcon className="w-3 h-3" />
               <span>{isAr ? 'تحتوي على مرفقات' : 'Contains attachments'}</span>

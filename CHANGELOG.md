@@ -7,6 +7,11 @@
 - Split authenticated workspace components and the update service version constant out of the initial browser bundle; optional display fonts now load only when selected.
 - Prevented unauthenticated pages from opening the persistent chat WebSocket and removed duplicate delayed message lookups from realtime handling.
 - Added bounded WebSocket send queues, write deadlines, PocketBase request timeouts, and non-blocking broadcasts to protect the chat service from slow clients.
+- Replaced fixed-size DM/server history with a shared `(created,id)` cursor contract, 30-message initial loads, 50-message older pages, per-conversation request generations, and cache-safe anchored prepends.
+- Removed destructive 150-message offline trims, realtime create double-fetches, server-wide ping history scans, calls-table voice polling, and no-op notification writes.
+- Switched feed media preloading to four nearby thumbnails, kept cached content visible during refresh, and removed channel-keyed ChatPanel remounts that caused blank navigation frames.
+- Added PocketBase performance indexes in `pb_migrations/202609120001_performance_indexes.js`, pinned the compatible JavaScript SDK to 0.21.5, and added cursor tests plus a 300 KiB initial-JavaScript CI budget.
+- Added Cloudflare Pages SPA redirects/cache headers and an optional deployment workflow for `app.sirverdata.top`; LiveKit and native/Tauri code remain deferred until needed.
 
 ## [0.4.5] - 2026-09-11
 ### Performance: Deep Performance Audit & Main-Thread Unblocking
@@ -27,7 +32,7 @@
 - **Relaxed Periodic Background Intervals (`src/components/DiscoveryCenter.tsx`, `src/components/ChannelList.tsx`)**:
   - Relaxed presence ticks and friends synchronization intervals from 15s to 60s, and guarded them with `!document.hidden` to halt timer processing when tabs are inactive.
 - **Capped Offline IndexedDB Message Retention (`src/services/offlineCacheService.ts`)**:
-  - Capped channel message history in the offline cache to the most recent 150 items per channel to prevent memory bloat and sluggish IndexedDB transaction serialization.
+- Reworked channel message history retention so pagination pages are merged losslessly; the active UI window is bounded separately from the IndexedDB history cache.
 
 ## [0.4.4] - 2026-09-11
 ### Fix: DM Call Signaling & Incoming Ringing

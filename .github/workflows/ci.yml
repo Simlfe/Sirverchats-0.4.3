@@ -1,0 +1,36 @@
+name: Web CI Gate
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Typecheck, tests, build and bundle budget
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeScript check
+        run: npm run lint
+
+      - name: Cursor and pagination tests
+        run: npm run test:unit
+
+      - name: Production web build
+        run: npm run build
+
+      - name: Initial JavaScript budget
+        run: npm run check:bundle

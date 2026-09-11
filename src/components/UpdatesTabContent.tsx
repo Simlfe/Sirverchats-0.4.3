@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { UserSettings, formatBytes } from '../lib/userSettings';
 import { updateService, UpdateState, CURRENT_APP_VERSION } from '../services/updateService';
-import { isTauriEnvironment } from '../lib/tauriDesktopService';
+import { isTauriEnvironment } from '../lib/nativePlatform';
 import { liveShellService } from '../services/liveShellService';
 
 interface UpdatesTabContentProps {

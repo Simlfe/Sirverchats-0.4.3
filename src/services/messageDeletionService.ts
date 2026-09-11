@@ -48,12 +48,12 @@ export class MessageDeletionService {
       if (!isDemo && pb) {
         try {
           messageRecord = await pb.collection('messages').getOne(messageId, {
-            expand: 'attachments(message),private_attachments(message)'
+            expand: 'attachments_via_message,private_attachments_via_message'
           }).catch(() => null);
 
           if (!messageRecord) {
             messageRecord = await pb.collection('private_messages').getOne(messageId, {
-              expand: 'attachments(message),private_attachments(message)'
+              expand: 'attachments_via_message,private_attachments_via_message'
             }).catch(() => null);
           }
         } catch (err) {
@@ -184,8 +184,8 @@ export class MessageDeletionService {
 
     // 1. Gather attachment IDs from expanded fields on messageRecord if available
     if (messageRecord) {
-      const expandedPublic = messageRecord.expand?.['attachments(message)'] || [];
-      const expandedPrivate = messageRecord.expand?.['private_attachments(message)'] || [];
+      const expandedPublic = messageRecord.expand?.['attachments_via_message'] || messageRecord.expand?.['attachments(message)'] || [];
+      const expandedPrivate = messageRecord.expand?.['private_attachments_via_message'] || messageRecord.expand?.['private_attachments(message)'] || [];
       [...expandedPublic, ...expandedPrivate].forEach((att: any) => {
         if (att?.id) attachmentIds.add(att.id);
       });
