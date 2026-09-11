@@ -31,7 +31,18 @@ class CallSignalingService {
   }
 
   public getCurrentUser(): User | null {
-    return this.currentUser || pbService.getCurrentUser();
+    if (this.currentUser) return this.currentUser;
+    const fromPb = pbService.getCurrentUser();
+    if (fromPb) return fromPb;
+    try {
+      const stored = localStorage.getItem('pocketbase_auth');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.model) return parsed.model as User;
+        if (parsed?.record) return parsed.record as User;
+      }
+    } catch {}
+    return null;
   }
 
   private init() {
@@ -509,14 +520,14 @@ class CallSignalingService {
         return;
       }
 
-      const myId = String(user.id || '').trim();
+      const myId = String(user?.id || '').trim();
       const callerId = String(data.callerId || data.callerUser?.id || '').trim();
       const targetId = String(data.targetUserId || data.targetUser?.id || '').trim();
 
       // Check if call is for this user and caller is someone else
       // Never ring if caller is current user!
-      if (callerId === myId) return;
-      if (targetId && targetId !== myId) return;
+      if (callerId && myId && callerId === myId) return;
+      if (targetId && myId && targetId !== myId) return;
 
       // If already ringing this exact call, ignore duplicate trigger
       if (this.activeCallEvent && this.activeCallEvent.callId === data.callId) {
@@ -585,8 +596,8 @@ class CallSignalingService {
         const targetId = String(data.targetUserId || data.targetUser?.id || '').trim();
 
         // Never trigger incoming call for the caller themselves
-        if (callerId === myId) return;
-        if (targetId && targetId !== myId) return;
+        if (callerId && myId && callerId === myId) return;
+        if (targetId && myId && targetId !== myId) return;
 
         // If current user is already in a call, signal busy back
         if (this.activeCallEvent && ['ringing', 'accepted'].includes(this.activeCallEvent.state)) {

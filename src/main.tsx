@@ -8,9 +8,20 @@ import { liveShellService } from './services/liveShellService.ts';
 import { cleanupStorageQuota } from './lib/storageManager.ts';
 import './index.css';
 
-// Proactively run emergency quota cleanup if localStorage is congested
+// Run quota cleanup during idle time after initial mount if supported
 if (typeof window !== 'undefined') {
-  cleanupStorageQuota();
+  const deferCleanup = () => {
+    if ('requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(() => cleanupStorageQuota());
+    } else {
+      setTimeout(() => cleanupStorageQuota(), 3000);
+    }
+  };
+  if (document.readyState === 'complete') {
+    deferCleanup();
+  } else {
+    window.addEventListener('load', deferCleanup, { once: true });
+  }
 }
 
 // Initialize Live Web Shell for native desktop clients

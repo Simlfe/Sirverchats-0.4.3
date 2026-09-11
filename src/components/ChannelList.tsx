@@ -243,8 +243,10 @@ function ChannelList({
 
     window.addEventListener('user-presence-changed', handleUserPresenceChanged);
     const timer = setInterval(() => {
-      setPresenceTick((t) => t + 1);
-    }, 15000);
+      if (typeof document === 'undefined' || !document.hidden) {
+        setPresenceTick((t) => t + 1);
+      }
+    }, 60000);
 
     return () => {
       window.removeEventListener('user-presence-changed', handleUserPresenceChanged);

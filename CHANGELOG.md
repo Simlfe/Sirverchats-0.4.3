@@ -1,6 +1,59 @@
 # Sirver Application Changelog
 
+## [0.4.5] - 2026-09-11
+### Performance: Deep Performance Audit & Main-Thread Unblocking
+- **Eliminated Synchronous LocalStorage in Critical Render Loops (`src/pocketbase.ts`, `src/components/ChatPanel.tsx`, `src/App.tsx`)**:
+  - Implemented in-memory Maps (`serverMembersCache`, `negativeServerMembersCache`, `serverRolesCache`) in `PocketBaseService`. `getCachedServerMember` and `getCachedServerRoles` now return instantaneously without blocking the browser thread on repeated disk reads.
+  - Implemented `fastLocalCache` in `src/pocketbase.ts` to cache key profile and server preference items in memory, eliminating up to 15 synchronous `localStorage.getItem` calls on every single message and member rendered via `getEffectiveProfile`, `getServerIconUrl`, and `getServerBannerUrl`.
+  - Refactored `ChatPanel.tsx` member list mapping and mention parsers to eliminate synchronous `localStorage.getItem` reads inside iterative loops.
+  - Removed synchronous `localStorage.getItem` queries from the outgoing message mention targeting loop in `App.tsx`.
+- **O(1) User Lookups & Promise Deduplication (`src/pocketbase.ts`, `src/components/ChatPanel.tsx`)**:
+  - Added `usersMapCache` in `PocketBaseService` to replace O(N) linear array searches in `getCachedUser(userId)` with instant O(1) Map lookups.
+  - Added request deduplication (`pendingUserFetches`) and negative caching (`negativeUserFetches`) to `fetchUserById` to prevent concurrent network stampedes during render passes.
+  - Added memoized `allUsersMap` and `userNameLookupMap` in `ChatPanel.tsx` to accelerate `@mention` parsing and sender display resolution without scanning arrays.
+- **In-Memory User Settings Cache (`src/lib/userSettings.ts`)**:
+  - Replaced synchronous `localStorage.getItem('user_settings')` on every component read with an in-memory cached state, synchronized via window event listeners.
+- **SQLite Database Write Lock & Voice Presence Throttling (`src/pocketbase.ts`, `src/services/voicePresenceStore.ts`)**:
+  - Relaxed voice presence heartbeat and pruning frequency from 3 seconds to 10 seconds, and throttled database synchronization to once every 45-60 seconds (or immediately on state change).
+  - Removed destructive `delete` queries executed during read cycles in `fetchVoicePresences`, and cached voice presences in memory for 10 seconds.
+- **Relaxed Periodic Background Intervals (`src/components/DiscoveryCenter.tsx`, `src/components/ChannelList.tsx`)**:
+  - Relaxed presence ticks and friends synchronization intervals from 15s to 60s, and guarded them with `!document.hidden` to halt timer processing when tabs are inactive.
+- **Capped Offline IndexedDB Message Retention (`src/services/offlineCacheService.ts`)**:
+  - Capped channel message history in the offline cache to the most recent 150 items per channel to prevent memory bloat and sluggish IndexedDB transaction serialization.
+
+## [0.4.4] - 2026-09-11
+### Fix: DM Call Signaling & Incoming Ringing
+- **Realtime Signaling Fast-Path (`src/App.tsx`, `src/services/callSignaling.ts`)**:
+  - Added an immediate fast-path in `subscribeToPrivateMessages` and `subscribeToMessages` for `INCOMING_CALL:` and `CALL_SIGNAL:` messages that directly invokes `callSignalingService.handleIncomingCallPayload` before any async user fetches or chat bubble rendering.
+  - Automatically deletes ephemeral signaling records from PocketBase upon receipt so they do not clutter chat history or database storage.
+  - Synchronized `callSignalingService.setCurrentUser(currentUser)` on login/state changes and added a resilient fallback to stored authentication in `getCurrentUser()`.
+  - Fixed recipient checks in `callSignaling.ts` and `MediaContext.tsx` to ensure incoming calls reliably trigger the ringing UI (`FloatingCallWindow`) and sound.
+- **Audio Context & Ringtone Resilience (`src/lib/sounds.ts`)**:
+  - Expanded interaction listeners for audio context unlocking to include `pointerdown`, `mousedown`, `touchstart`, `touchend`, `keydown`, and `focus`.
+  - Added a one-time user-gesture resume fallback to `playRingtoneSound` to ensure audio playback triggers immediately upon user touch/click even if the browser autoplay policy temporarily restricted background audio.
+
+### Performance: Browser and Mobile Web Optimization
+- **Prevented Main-Thread Periodic Re-renders (`src/components/ChatPanel.tsx`, `src/context/MediaContext.tsx`)**:
+  - Fixed an infinite re-render loop in `ChatPanel.tsx`'s presence timer that was creating a new array reference every 15 seconds without updating user offline status. Throttled the interval to 60s, checked page visibility, and mutated state conditionally.
+  - Constrained the camera telemetry polling in `MediaContext.tsx` to only run when actively in a room with the camera enabled, eliminating unconditional 1-second interval re-renders across the entire application.
+- **Eliminated Database Lock Contention (`src/pocketbase.ts`, `src/App.tsx`)**:
+  - Throttled `sendHeartbeat` in `pocketbase.ts` to at most once per 90 seconds, and updated `App.tsx` presence heartbeat interval from 25s to 90s (skipping when the page is hidden), eliminating SQLite write-lock contention that delayed database queries for up to a minute.
+- **Eliminated LocalStorage Congestion & Blocking Scans (`src/lib/storageManager.ts`, `src/services/offlineCacheService.ts`, `src/pocketbase.ts`, `src/main.tsx`)**:
+  - Removed synchronous startup scan of all localStorage keys in `storageManager.ts` and deferred `cleanupStorageQuota` in `main.tsx` to `requestIdleCallback`.
+  - Throttled `cleanupStorageQuota` so it cannot execute more than once every 30 seconds.
+  - Removed large synchronous `localStorage.setItem` writes for offline servers, channels, and direct messages in `offlineCacheService.ts`, utilizing non-blocking in-memory Maps and IndexedDB instead.
+  - Removed synchronous `localStorage.setItem('cached_all_users', ...)` from `pocketbase.ts`, relying on memory caching with an extended 3-minute TTL and single-user lookup via `fetchUserById`.
+
 ## [0.4.3] - 2026-09-10
+### Fix: Webpage Icon Display & Social Preview (Favicons, Manifest & Open Graph)
+- **Webpage Icon & Favicon Suite (`public/`, `index.html`)**:
+  - Placed complete favicon suite in `public/` including `favicon.ico` (multi-resolution 16px to 256px), `favicon.svg` (crisp vector icon), `favicon-32x32.png`, `favicon-16x16.png`, `apple-touch-icon.png` (180x180), and PWA icons (`icon-192x192.png`, `icon-512x512.png`).
+  - Updated `index.html` with `<link rel="icon">`, `<link rel="apple-touch-icon">`, and `<link rel="manifest">` tags, resolving the missing tab icon and browser default page icon issue.
+- **Social Link & Page Preview (`index.html`, `public/og-preview.png`)**:
+  - Generated a 1200x630 high-resolution Open Graph card featuring the SirverData logo, Avocado Green (`#7BAE37`) accents, ecosystem tags, and crisp branding.
+  - Added comprehensive Open Graph (`og:title`, `og:description`, `og:image`, `og:site_name`, `og:url`) and Twitter Card (`twitter:card`, `twitter:image`, `twitter:title`, `twitter:description`) meta tags to `index.html`.
+- **Pre-Hydration Visual Shell (`index.html`)**:
+  - Embedded a styled loading splash inside `<div id="root">` with an animated pulse glow and app icon, ensuring instantaneous branded rendering during page loading.
 ### Fix: GitHub Actions CI/CD Pipeline & Live Web Shell Synchronization
 - **Live Web Page Loading Configuration (`capacitor.config.ts`, `android/app/src/main/assets/capacitor.config.json`)**:
   - Configured `server.url = 'https://app.sirverdata.top'` and `cleartext = true` in Capacitor configuration, ensuring mobile APK builds act as native live web shells loading the hosted web application directly while preserving native plugins (notifications, status bar).

@@ -122,12 +122,14 @@ class VoicePresenceStore {
     } catch (e) {}
   }
 
+  private lastDbSyncTime: number = 0;
+
   private startHeartbeatAndPruning() {
     if (typeof window === 'undefined') return;
 
     let tick = 0;
-    // Prune stale participants (> 30s without heartbeat) & broadcast local presence (every 3s)
-    const PRESENCE_GRACE_PERIOD_MS = 30000;
+    // Prune stale participants (> 35s without heartbeat) & broadcast local presence (every 10s)
+    const PRESENCE_GRACE_PERIOD_MS = 35000;
 
     this.pruneTimer = setInterval(() => {
       tick++;
@@ -136,9 +138,9 @@ class VoicePresenceStore {
 
       this.store.forEach((channelMap, channelId) => {
         channelMap.forEach((p, userId) => {
-          // If participant is not local participant and hasn't updated heartbeat in > 30 seconds
+          // If participant is not local participant and hasn't updated heartbeat in > 35 seconds
           if (p.userId !== this.localParticipant?.userId && p.lastHeartbeat && (now - p.lastHeartbeat > PRESENCE_GRACE_PERIOD_MS)) {
-            console.log(`[VOICE_LIFECYCLE] Presence heartbeat stale (>30s) for userId=${userId} in channel=${channelId}. Pruning from presence store (media connection remains authoritative).`);
+            console.log(`[VOICE_LIFECYCLE] Presence heartbeat stale (>35s) for userId=${userId} in channel=${channelId}. Pruning from presence store.`);
             channelMap.delete(userId);
             changed = true;
           }
@@ -153,17 +155,17 @@ class VoicePresenceStore {
         this.notify();
       }
 
-      // Periodically refresh initial presences as fallback (every 6s)
-      if (tick % 2 === 0) {
+      // Relaxed fallback sync: only refresh if actively in a voice channel, tab is visible, and every 60s
+      if (this.localParticipant && tick % 6 === 0 && (typeof document === 'undefined' || !document.hidden)) {
         this.fetchInitialPresences();
       }
 
-      // Heartbeat for local participant if connected
+      // Heartbeat for local participant if connected (broadcasts every 10s)
       if (this.localParticipant) {
         this.localParticipant.lastHeartbeat = Date.now();
-        this.broadcastSelfPresence(this.localParticipant);
+        this.broadcastSelfPresence(this.localParticipant, false);
       }
-    }, 3000);
+    }, 10000);
   }
 
   private initWebSocketListener() {
@@ -389,7 +391,7 @@ class VoicePresenceStore {
     this.notify();
   }
 
-  public broadcastSelfPresence(info: VoiceParticipantInfo) {
+  public broadcastSelfPresence(info: VoiceParticipantInfo, forceDbSync = true) {
     const msg = {
       type: 'voice_presence',
       channelId: info.channelId,
@@ -408,7 +410,13 @@ class VoicePresenceStore {
     };
     wsService.send(msg as any);
     try { this.bc?.postMessage(msg); } catch (e) {}
-    pbService.syncVoicePresence(info).catch(() => {});
+
+    // Only write to PocketBase DB on state changes or after at least 60 seconds
+    const now = Date.now();
+    if (forceDbSync || (now - this.lastDbSyncTime > 60000)) {
+      this.lastDbSyncTime = now;
+      pbService.syncVoicePresence(info).catch(() => {});
+    }
   }
 
   public queryAllPresence(serverId?: string) {

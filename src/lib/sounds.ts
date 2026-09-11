@@ -26,9 +26,10 @@ export function unlockAudioContext() {
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('click', unlockAudioContext, { passive: true });
-  window.addEventListener('touchstart', unlockAudioContext, { passive: true });
-  window.addEventListener('keydown', unlockAudioContext, { passive: true });
+  const events = ['click', 'touchstart', 'touchend', 'pointerdown', 'mousedown', 'keydown', 'focus'];
+  events.forEach((evt) => {
+    window.addEventListener(evt, unlockAudioContext, { passive: true });
+  });
 }
 
 /**
@@ -156,10 +157,27 @@ export function getIsRingtoneMuted(): boolean {
  */
 export function playRingtoneSound() {
   stopRingtoneSound();
-  const ring = () => {
+  const ring = async () => {
     if (ringtoneMuted) return;
     try {
       const ctx = getAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+        // In case browser autoplay policy blocks until first touch/click
+        if (typeof window !== 'undefined') {
+          const onFirstTouch = () => {
+            unlockAudioContext();
+            ring();
+            ['pointerdown', 'touchstart', 'click'].forEach((e) =>
+              window.removeEventListener(e, onFirstTouch)
+            );
+          };
+          ['pointerdown', 'touchstart', 'click'].forEach((e) =>
+            window.addEventListener(e, onFirstTouch, { once: true, passive: true })
+          );
+        }
+      }
       const now = ctx.currentTime;
 
       // Note 1: D5 (587.33 Hz)
@@ -167,7 +185,7 @@ export function playRingtoneSound() {
       const gain1 = ctx.createGain();
       osc1.type = 'sine';
       osc1.frequency.setValueAtTime(587.33, now);
-      gain1.gain.setValueAtTime(0.14, now);
+      gain1.gain.setValueAtTime(0.18, now);
       gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
@@ -179,7 +197,7 @@ export function playRingtoneSound() {
       const gain2 = ctx.createGain();
       osc2.type = 'sine';
       osc2.frequency.setValueAtTime(880, now + 0.15);
-      gain2.gain.setValueAtTime(0.14, now + 0.15);
+      gain2.gain.setValueAtTime(0.18, now + 0.15);
       gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
@@ -191,12 +209,19 @@ export function playRingtoneSound() {
       const gain3 = ctx.createGain();
       osc3.type = 'sine';
       osc3.frequency.setValueAtTime(987.77, now + 0.35);
-      gain3.gain.setValueAtTime(0.12, now + 0.35);
+      gain3.gain.setValueAtTime(0.16, now + 0.35);
       gain3.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
       osc3.connect(gain3);
       gain3.connect(ctx.destination);
       osc3.start(now + 0.35);
       osc3.stop(now + 0.85);
+
+      // Mobile haptic vibration pattern for incoming ringtone
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try {
+          navigator.vibrate([400, 200, 400, 200, 600]);
+        } catch {}
+      }
     } catch (e) {}
   };
   ring();
@@ -207,6 +232,11 @@ export function stopRingtoneSound() {
   if (ringtoneInterval) {
     clearInterval(ringtoneInterval);
     ringtoneInterval = null;
+  }
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    try {
+      navigator.vibrate(0);
+    } catch {}
   }
 }
 

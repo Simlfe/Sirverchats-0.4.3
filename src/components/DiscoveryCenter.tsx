@@ -113,8 +113,10 @@ function DiscoveryCenter({
 
     window.addEventListener('user-presence-changed', handleUserPresenceChanged);
     const timer = setInterval(() => {
-      setPresenceTick((t) => t + 1);
-    }, 15000);
+      if (typeof document === 'undefined' || !document.hidden) {
+        setPresenceTick((t) => t + 1);
+      }
+    }, 60000);
 
     return () => {
       window.removeEventListener('user-presence-changed', handleUserPresenceChanged);
@@ -286,10 +288,14 @@ function DiscoveryCenter({
     }
   };
 
-  // Poll for changes
+  // Poll for changes (relaxed to 60s, only while tab is active)
   useEffect(() => {
     syncFriendsAndRequests();
-    const interval = setInterval(syncFriendsAndRequests, 15000);
+    const interval = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) {
+        syncFriendsAndRequests();
+      }
+    }, 60000);
     return () => clearInterval(interval);
   }, [currentUser]);
 

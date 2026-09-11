@@ -182,9 +182,47 @@ export function getUserBannerUrl(user: User | null | undefined): string {
   return getFileUrl('users', user.id, user.banner);
 }
 
+// Fast in-memory cache for hot local storage keys (user profile colors, server overrides, etc.)
+const fastLocalCache = new Map<string, string | null>();
+
+export function getFastLocalItem(key: string): string | null {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return null;
+  if (fastLocalCache.has(key)) {
+    return fastLocalCache.get(key)!;
+  }
+  try {
+    const val = localStorage.getItem(key);
+    fastLocalCache.set(key, val);
+    return val;
+  } catch {
+    return null;
+  }
+}
+
+export function setFastLocalItem(key: string, val: string): void {
+  fastLocalCache.set(key, val);
+  try {
+    localStorage.setItem(key, val);
+  } catch {}
+}
+
+export function removeFastLocalItem(key: string): void {
+  fastLocalCache.delete(key);
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key) fastLocalCache.delete(e.key);
+    else fastLocalCache.clear();
+  });
+}
+
 export function getServerIconUrl(server: Server | null | undefined): string {
   if (!server) return '';
-  const localIcon = localStorage.getItem(`server_icon_${server.id}`);
+  const localIcon = getFastLocalItem(`server_icon_${server.id}`);
   if (localIcon) return localIcon;
   if (!server.icon) return '';
   return getFileUrl('servers', server.id, server.icon);
@@ -192,7 +230,7 @@ export function getServerIconUrl(server: Server | null | undefined): string {
 
 export function getServerBannerUrl(server: Server | null | undefined): string {
   if (!server) return '';
-  const localBanner = localStorage.getItem(`server_banner_${server.id}`);
+  const localBanner = getFastLocalItem(`server_banner_${server.id}`);
   if (localBanner) return localBanner;
   if (!server.banner) return '';
   return getFileUrl('servers', server.id, server.banner);
@@ -204,7 +242,7 @@ export function getServerMemberDisplayName(member: ServerMember | null | undefin
   const isSelf = typeof localStorage !== 'undefined' && uId && (pbService.getCurrentUser()?.id === uId);
 
   if (serverId && sId && uId && isSelf) {
-    const local = localStorage.getItem(`server_name_${sId}_${uId}`);
+    const local = getFastLocalItem(`server_name_${sId}_${uId}`);
     if (local && local.trim()) return local.trim();
   }
   if (serverId && member?.member_name && member.member_name.trim()) return member.member_name.trim();
@@ -221,7 +259,7 @@ export function getServerMemberAvatarUrl(member: ServerMember | null | undefined
   const isSelf = typeof localStorage !== 'undefined' && uId && (pbService.getCurrentUser()?.id === uId);
 
   if (sId && uId && isSelf) {
-    const local = localStorage.getItem(`server_avatar_${sId}_${uId}`);
+    const local = getFastLocalItem(`server_avatar_${sId}_${uId}`);
     if (local && local !== 'REMOVE') return local;
     if (local === 'REMOVE') {
       if (user?.avatar && user.avatar !== 'REMOVE') {
@@ -254,7 +292,7 @@ export function getServerMemberBannerUrl(member: ServerMember | null | undefined
   const isSelf = typeof localStorage !== 'undefined' && uId && (pbService.getCurrentUser()?.id === uId);
 
   if (sId && uId && isSelf) {
-    const local = localStorage.getItem(`server_banner_${sId}_${uId}`);
+    const local = getFastLocalItem(`server_banner_${sId}_${uId}`);
     if (local && local !== 'REMOVE') return local;
     if (local === 'REMOVE') {
       if (user?.banner && user.banner !== 'REMOVE') {
@@ -297,7 +335,7 @@ export function getServerMemberProfileSettings(member: ServerMember | null | und
 
   if (sId && uId && isSelf) {
     try {
-      const localStr = localStorage.getItem(`server_profile_settings_${sId}_${uId}`);
+      const localStr = getFastLocalItem(`server_profile_settings_${sId}_${uId}`);
       if (localStr) {
         settings = { ...settings, ...JSON.parse(localStr) };
       }
@@ -349,18 +387,10 @@ export function getEffectiveProfile(
 
   // If user is currently logged in, check local settings cache as well
   const isCurrentAuthUser = typeof localStorage !== 'undefined' && (pbService.getCurrentUser()?.id === user.id);
-  const localCache = isCurrentAuthUser ? (() => {
-    try {
-      const raw = localStorage.getItem('sirver_user_settings_cache_v2');
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
-  })() : null;
 
   const globalColor1 =
     userSettings?.appearance?.cardColor ||
     userSettings?.appearance?.cardColor1 ||
-    localCache?.appearance?.cardColor ||
-    localCache?.appearance?.cardColor1 ||
     userSettings?.cardColor ||
     userSettings?.cardColor1 ||
     userSettings?.card_color ||
@@ -372,12 +402,11 @@ export function getEffectiveProfile(
     (user as any).card_color ||
     (user as any).color1 ||
     (user as any).color_1 ||
-    (isCurrentAuthUser ? localStorage.getItem('user_card_color1') : null) ||
+    (isCurrentAuthUser ? getFastLocalItem('user_card_color1') : null) ||
     'var(--accent-color)';
 
   const globalColor2 =
     userSettings?.appearance?.cardColor2 ||
-    localCache?.appearance?.cardColor2 ||
     userSettings?.cardColor2 ||
     userSettings?.card_color2 ||
     userSettings?.color2 ||
@@ -386,12 +415,11 @@ export function getEffectiveProfile(
     (user as any).card_color2 ||
     (user as any).color2 ||
     (user as any).color_2 ||
-    (isCurrentAuthUser ? localStorage.getItem('user_card_color2') : null) ||
+    (isCurrentAuthUser ? getFastLocalItem('user_card_color2') : null) ||
     globalColor1;
 
   const globalFrameColor =
     userSettings?.appearance?.avatarFrameColor ||
-    localCache?.appearance?.avatarFrameColor ||
     userSettings?.avatarFrameColor ||
     userSettings?.avatar_frame_color ||
     userSettings?.frameColor ||
@@ -399,7 +427,7 @@ export function getEffectiveProfile(
     (user as any).avatarFrameColor ||
     (user as any).avatar_frame_color ||
     (user as any).frameColor ||
-    (isCurrentAuthUser ? localStorage.getItem('user_frame_color') : null) ||
+    (isCurrentAuthUser ? getFastLocalItem('user_frame_color') : null) ||
     globalColor1;
 
   const displayName = getServerMemberDisplayName(member, user, serverId || undefined);
@@ -407,10 +435,10 @@ export function getEffectiveProfile(
   const bannerUrl = getServerMemberBannerUrl(member, user, serverId || undefined);
 
   const serverSettings = getServerMemberProfileSettings(member, serverId || undefined, user.id);
-  const serverColor1 = serverSettings.cardColor || (serverId && isCurrentAuthUser ? localStorage.getItem(`server_color1_${serverId}_${user.id}`) : null);
-  const serverColor2 = serverSettings.cardColor2 || (serverId && isCurrentAuthUser ? localStorage.getItem(`server_color2_${serverId}_${user.id}`) : null);
-  const serverFrameColor = serverSettings.avatarFrameColor || (serverId && isCurrentAuthUser ? localStorage.getItem(`server_frame_color_${serverId}_${user.id}`) : null);
-  const serverBio = serverSettings.bio || (serverId && isCurrentAuthUser ? localStorage.getItem(`server_bio_${serverId}_${user.id}`) : null);
+  const serverColor1 = serverSettings.cardColor || (serverId && isCurrentAuthUser ? getFastLocalItem(`server_color1_${serverId}_${user.id}`) : null);
+  const serverColor2 = serverSettings.cardColor2 || (serverId && isCurrentAuthUser ? getFastLocalItem(`server_color2_${serverId}_${user.id}`) : null);
+  const serverFrameColor = serverSettings.avatarFrameColor || (serverId && isCurrentAuthUser ? getFastLocalItem(`server_frame_color_${serverId}_${user.id}`) : null);
+  const serverBio = serverSettings.bio || (serverId && isCurrentAuthUser ? getFastLocalItem(`server_bio_${serverId}_${user.id}`) : null);
 
   const cardColor1 = (serverId && (serverColor1 || serverSettings.cardColor)) ? (serverColor1 || globalColor1) : globalColor1;
   const cardColor2 = (serverId && (serverColor2 || serverSettings.cardColor2)) ? (serverColor2 || globalColor2) : globalColor2;
@@ -424,13 +452,13 @@ export function getEffectiveProfile(
       (member?.server_banner && member.server_banner !== 'REMOVE') ||
       serverSettings?.bio ||
       (isCurrentAuthUser && (
-        localStorage.getItem(`server_name_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_avatar_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_banner_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_color1_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_color2_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_frame_color_${serverId}_${user.id}`) ||
-        localStorage.getItem(`server_bio_${serverId}_${user.id}`)
+        getFastLocalItem(`server_name_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_avatar_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_banner_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_color1_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_color2_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_frame_color_${serverId}_${user.id}`) ||
+        getFastLocalItem(`server_bio_${serverId}_${user.id}`)
       ))
     )
   );
@@ -557,7 +585,16 @@ class PocketBaseService {
   private demoListeners: Set<(event: any) => void> = new Set();
   private pinnedCache: Map<string, string[]> = new Map();
   private serverMembersCache: Map<string, Map<string, ServerMember>> = new Map();
+  private negativeServerMembersCache: Set<string> = new Set();
+  private serverRolesCache: Map<string, ServerRole[]> = new Map();
+  private lastVoiceSyncTimeByUser: Map<string, number> = new Map();
+  private lastVoiceSyncStateByUser: Map<string, string> = new Map();
+  private cachedVoicePresences: any[] | null = null;
+  private lastVoicePresencesFetchTime: number = 0;
   private usersCache: User[] | null = null;
+  private usersMapCache: Map<string, User> = new Map();
+  private pendingUserFetches: Map<string, Promise<User | null>> = new Map();
+  private negativeUserFetches: Set<string> = new Set();
   private lastUsersFetch: number = 0;
   private privateChatServerCache: Map<string, any> = new Map();
   private dmMessagesCache: Map<string, Message[]> = new Map();
@@ -685,6 +722,10 @@ class PocketBaseService {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
           this.usersCache = parsed;
+          this.usersMapCache.clear();
+          for (const u of parsed) {
+            if (u?.id) this.usersMapCache.set(u.id, u);
+          }
           return parsed;
         }
       }
@@ -720,11 +761,17 @@ class PocketBaseService {
 
   getCachedServerRoles(serverId: string): ServerRole[] {
     if (!serverId) return [];
+    if (this.serverRolesCache.has(serverId)) {
+      return this.serverRolesCache.get(serverId)!;
+    }
     try {
       const stored = localStorage.getItem(`server_roles_${serverId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          this.serverRolesCache.set(serverId, parsed);
+          return parsed;
+        }
       }
     } catch (err) {}
     return [];
@@ -732,9 +779,14 @@ class PocketBaseService {
 
   getCachedUser(userId: string): User | null {
     if (!userId) return null;
+    const fromMap = this.usersMapCache.get(userId);
+    if (fromMap) return fromMap;
     if (this.usersCache) {
       const found = this.usersCache.find((u) => u.id === userId);
-      if (found) return found;
+      if (found) {
+        this.usersMapCache.set(userId, found);
+        return found;
+      }
     }
     return null;
   }
@@ -742,19 +794,19 @@ class PocketBaseService {
   getCachedServerMember(serverId: string, userId: string): ServerMember | null {
     if (!serverId || !userId) return null;
 
+    const sMap = this.serverMembersCache.get(serverId);
+    if (sMap && sMap.has(userId)) {
+      return sMap.get(userId)!;
+    }
+
+    const negKey = `${serverId}_${userId}`;
+    if (this.negativeServerMembersCache.has(negKey)) {
+      return null;
+    }
+
     const localIsMember = localStorage.getItem(`is_member_${serverId}_${userId}`);
     const localStatus = localStorage.getItem(`membership_status_${serverId}_${userId}`);
     const localLeftAt = localStorage.getItem(`left_at_${serverId}_${userId}`);
-
-    const sMap = this.serverMembersCache.get(serverId);
-    if (sMap && sMap.has(userId)) {
-      const cached = sMap.get(userId)!;
-      if (localStatus) cached.membership_status = localStatus as any;
-      if (localIsMember === 'false') cached.is_member = false;
-      if (localIsMember === 'true') cached.is_member = true;
-      if (localLeftAt) cached.left_at = localLeftAt;
-      return cached;
-    }
 
     const name = localStorage.getItem(`server_name_${serverId}_${userId}`);
     const avatar = localStorage.getItem(`server_avatar_${serverId}_${userId}`);
@@ -784,6 +836,8 @@ class PocketBaseService {
       this.serverMembersCache.get(serverId)!.set(userId, syntheticMember);
       return syntheticMember;
     }
+
+    this.negativeServerMembersCache.add(negKey);
     return null;
   }
 
@@ -2181,6 +2235,18 @@ class PocketBaseService {
 
     if (this.isDemo) return;
 
+    // Database sync throttle: avoid thrashing SQLite write locks if status has not changed
+    const now = Date.now();
+    const stateSig = `${info.channelId}_${info.isMuted}_${info.isDeafened}_${info.isCameraEnabled}_${info.isScreenSharing}_${info.isSpeaking}`;
+    const lastTime = this.lastVoiceSyncTimeByUser.get(info.userId) || 0;
+    const lastSig = this.lastVoiceSyncStateByUser.get(info.userId);
+
+    if (lastSig === stateSig && (now - lastTime < 45000)) {
+      return;
+    }
+    this.lastVoiceSyncTimeByUser.set(info.userId, now);
+    this.lastVoiceSyncStateByUser.set(info.userId, stateSig);
+
     // 1. Sync via voice_presences collection (only if backend supports this collection)
     if (this.voicePresencesSupported) {
       try {
@@ -2302,9 +2368,13 @@ class PocketBaseService {
       return Array.from(this.memoryVoicePresences.values());
     }
 
-    const presences: any[] = [];
     const now = Date.now();
-    const MAX_AGE_MS = 20000; // 20 seconds max age for voice presences
+    if (this.cachedVoicePresences && (now - this.lastVoicePresencesFetchTime < 10000)) {
+      return this.cachedVoicePresences;
+    }
+
+    const presences: any[] = [];
+    const MAX_AGE_MS = 25000; // 25 seconds max age for voice presences
 
     if (this.voicePresencesSupported) {
       try {
@@ -2335,9 +2405,6 @@ class PocketBaseService {
                 joinedAt: r.joined_at,
                 lastHeartbeat: updatedAt,
               });
-            } else {
-              // Asynchronously delete stale presence record from DB
-              this.pb.collection('voice_presences').delete(r.id).catch(() => {});
             }
           });
         }
@@ -2369,14 +2436,13 @@ class PocketBaseService {
                 }
               } catch (e) {}
             }
-          } else {
-            // Asynchronously delete stale call record from DB
-            this.pb.collection('calls').delete(r.id).catch(() => {});
           }
         });
       }
     } catch (e) {}
 
+    this.cachedVoicePresences = presences;
+    this.lastVoicePresencesFetchTime = now;
     return presences;
   }
 
@@ -3027,7 +3093,7 @@ class PocketBaseService {
     if (!this.usersCache || this.usersCache.length === 0) {
       this.getCachedUsers();
     }
-    if (!forceRefresh && this.usersCache && this.usersCache.length > 0 && (Date.now() - this.lastUsersFetch < 120000)) {
+    if (!forceRefresh && this.usersCache && this.usersCache.length > 0 && (Date.now() - this.lastUsersFetch < 180000)) {
       return this.usersCache;
     }
     try {
@@ -3036,19 +3102,21 @@ class PocketBaseService {
         requestKey: null
       });
       this.usersCache = records as any as User[];
+      this.usersMapCache.clear();
+      for (const u of this.usersCache) {
+        if (u?.id) this.usersMapCache.set(u.id, u);
+      }
       this.lastUsersFetch = Date.now();
-      try {
-        localStorage.setItem('cached_all_users', JSON.stringify(this.usersCache));
-      } catch (err) {}
       return this.usersCache;
     } catch (e) {
       try {
         const pageRecords = await this.pb.collection('users').getList(1, 200, { requestKey: null });
         this.usersCache = pageRecords.items as any as User[];
+        this.usersMapCache.clear();
+        for (const u of this.usersCache) {
+          if (u?.id) this.usersMapCache.set(u.id, u);
+        }
         this.lastUsersFetch = Date.now();
-        try {
-          localStorage.setItem('cached_all_users', JSON.stringify(this.usersCache));
-        } catch (err) {}
         return this.usersCache;
       } catch (innerErr) {
         if (this.usersCache) return this.usersCache;
@@ -3059,24 +3127,38 @@ class PocketBaseService {
   }
 
   async fetchUserById(userId: string): Promise<User | null> {
-    if (this.isDemo) return null;
-    if (this.usersCache) {
-      const cached = this.usersCache.find((u) => u.id === userId);
-      if (cached) return cached;
+    if (!userId || this.isDemo) return null;
+    const cached = this.getCachedUser(userId);
+    if (cached) return cached;
+    if (this.negativeUserFetches.has(userId)) return null;
+    if (this.pendingUserFetches.has(userId)) {
+      return this.pendingUserFetches.get(userId)!;
     }
-    try {
-      const record = await this.pb.collection('users').getOne(userId);
-      const user = record as any as User;
-      if (this.usersCache) {
-        const idx = this.usersCache.findIndex((u) => u.id === userId);
-        if (idx >= 0) this.usersCache[idx] = user;
-        else this.usersCache.push(user);
+
+    const fetchPromise = (async () => {
+      try {
+        const record = await this.pb.collection('users').getOne(userId);
+        const user = record as any as User;
+        if (user?.id) {
+          this.usersMapCache.set(user.id, user);
+          if (this.usersCache) {
+            const idx = this.usersCache.findIndex((u) => u.id === userId);
+            if (idx >= 0) this.usersCache[idx] = user;
+            else this.usersCache.push(user);
+          }
+        }
+        return user;
+      } catch (e) {
+        this.negativeUserFetches.add(userId);
+        setTimeout(() => this.negativeUserFetches.delete(userId), 60000);
+        return null;
+      } finally {
+        this.pendingUserFetches.delete(userId);
       }
-      return user;
-    } catch (e) {
-      console.warn(`Failed to fetch user by ID (${userId}):`, e);
-      return null;
-    }
+    })();
+
+    this.pendingUserFetches.set(userId, fetchPromise);
+    return fetchPromise;
   }
 
   async fetchAllServers(): Promise<Server[]> {
@@ -3753,9 +3835,14 @@ class PocketBaseService {
     }
     const currentId = this.pb.authStore.model?.id;
     let targetServerId = chatServerId;
+    if (targetServerId && targetServerId.startsWith('dm-server-')) {
+      targetServerId = targetServerId.replace('dm-server-', '');
+    } else if (targetServerId && (targetServerId.startsWith('dm-user-') || targetServerId.startsWith('dm-') || targetServerId.length !== 15)) {
+      targetServerId = undefined;
+    }
     if (!targetServerId) {
       const server = await this.getOrCreatePrivateChatServer(recipientId);
-      targetServerId = server.id;
+      targetServerId = server?.id;
     }
 
     const data: any = {
@@ -3802,6 +3889,16 @@ class PocketBaseService {
 
   async createPrivateMessage(recipientId: string, content: string, chatServerId?: string): Promise<Message> {
     return this.sendDirectMessage(recipientId, content, undefined, chatServerId);
+  }
+
+  async deletePrivateMessage(messageId: string): Promise<boolean> {
+    if (this.isDemo || !messageId) return true;
+    try {
+      await this.pb.collection('private_messages').delete(messageId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private privateMessageListeners = new Set<{ chatServerId: string; callback: (event: any) => void }>();
@@ -4335,8 +4432,10 @@ class PocketBaseService {
         localStorage.setItem(`server_roles_${serverId}`, JSON.stringify(merged));
       } catch (err) {}
 
+      this.serverRolesCache.set(serverId, merged);
       return merged;
     } catch (e) {
+      this.serverRolesCache.set(serverId, storedLocal);
       return storedLocal;
     }
   }
@@ -5024,8 +5123,14 @@ class PocketBaseService {
     return () => window.removeEventListener('storage', handleStorage);
   }
 
+  private lastHeartbeatSent: number = 0;
+
   async sendHeartbeat(userId: string): Promise<void> {
     if (this.isDemo || !userId) return;
+    const now = Date.now();
+    // Throttle to max once per 90 seconds to avoid database write lock congestion
+    if (now - this.lastHeartbeatSent < 90000) return;
+    this.lastHeartbeatSent = now;
     try {
       const nowIso = new Date().toISOString();
       await this.pb.collection('users').update(userId, {
@@ -5053,9 +5158,13 @@ class PocketBaseService {
       if (e?.record?.id && this.usersCache) {
         const idx = this.usersCache.findIndex((u) => u.id === e.record.id);
         if (idx >= 0) {
-          this.usersCache[idx] = mergeUserRecord(this.usersCache[idx], e.record as unknown as User);
+          const merged = mergeUserRecord(this.usersCache[idx], e.record as unknown as User);
+          this.usersCache[idx] = merged;
+          this.usersMapCache.set(e.record.id, merged);
         } else {
-          this.usersCache.push(e.record as unknown as User);
+          const newUser = e.record as unknown as User;
+          this.usersCache.push(newUser);
+          this.usersMapCache.set(e.record.id, newUser);
         }
       }
       this.userListeners.forEach((callback) => {

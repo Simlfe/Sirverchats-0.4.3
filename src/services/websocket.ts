@@ -79,6 +79,9 @@ class WebSocketService {
         try {
           const raw = JSON.parse(event.data);
           if (!raw) return;
+          if (raw.senderInstanceId && raw.senderInstanceId === this.instanceId) {
+            return; // Ignore echo: local listeners already processed this synchronously
+          }
           const channelId = raw.channelId || raw.channel_id || raw.channel || raw.target_id || '';
           const userId = raw.userId || raw.user_id || raw.sender_id || raw.sender || raw.user || '';
           const messageId = raw.messageId || raw.message_id || '';

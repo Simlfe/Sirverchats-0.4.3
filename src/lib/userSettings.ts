@@ -283,22 +283,43 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
 
 const SETTINGS_CACHE_KEY = 'sirver_user_settings_cache_v2';
 
+let inMemoryUserSettings: UserSettings | null = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('user-settings-changed', (e: any) => {
+    if (e.detail) {
+      inMemoryUserSettings = e.detail;
+    }
+  });
+  window.addEventListener('storage', (e: StorageEvent) => {
+    if (e.key === SETTINGS_CACHE_KEY) {
+      inMemoryUserSettings = null;
+    }
+  });
+}
+
 export function getCachedUserSettings(): UserSettings {
+  if (inMemoryUserSettings) {
+    return inMemoryUserSettings;
+  }
   try {
     const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return mergeWithDefaults(parsed);
+      inMemoryUserSettings = mergeWithDefaults(parsed);
+      return inMemoryUserSettings;
     }
   } catch (e) {
     console.warn('Failed to parse cached user settings:', e);
   }
-  return DEFAULT_USER_SETTINGS;
+  inMemoryUserSettings = DEFAULT_USER_SETTINGS;
+  return inMemoryUserSettings;
 }
 
 export const loadUserSettings = getCachedUserSettings;
 
 export function saveCachedUserSettings(settings: UserSettings): void {
+  inMemoryUserSettings = settings;
   try {
     localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(settings));
     if (typeof window !== 'undefined') {

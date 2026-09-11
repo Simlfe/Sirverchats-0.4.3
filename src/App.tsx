@@ -512,6 +512,24 @@ export default function App() {
           initialIsOpen: isSidebarOpen,
           active: true,
         };
+        window.addEventListener('touchmove', handleTouchMove, { passive: false });
+        window.addEventListener('touchend', handleTouchEnd, { passive: true });
+        window.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+      }
+    };
+
+    let dragRaf: number | null = null;
+    let pendingDragState: any = null;
+
+    const scheduleDragState = (newState: any) => {
+      pendingDragState = newState;
+      if (dragRaf === null) {
+        dragRaf = requestAnimationFrame(() => {
+          dragRaf = null;
+          if (pendingDragState) {
+            setSidebarDragState(pendingDragState);
+          }
+        });
       }
     };
 
@@ -528,7 +546,9 @@ export default function App() {
         if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 8) {
           state.axis = 'vertical';
           state.active = false;
-          setSidebarDragState({ isDragging: false, dragX: 0, opacity: 0 });
+          window.removeEventListener('touchmove', handleTouchMove);
+          window.removeEventListener('touchend', handleTouchEnd);
+          window.removeEventListener('touchcancel', handleTouchEnd);
           return;
         } else if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 8) {
           state.axis = 'horizontal';
@@ -567,7 +587,7 @@ export default function App() {
           ? Math.max(0, Math.min(1, (drawerWidth + translateX) / drawerWidth))
           : Math.max(0, Math.min(1, (drawerWidth - translateX) / drawerWidth));
 
-        setSidebarDragState({
+        scheduleDragState({
           isDragging: true,
           dragX: translateX,
           opacity,
@@ -576,6 +596,15 @@ export default function App() {
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
+
+      if (dragRaf !== null) {
+        cancelAnimationFrame(dragRaf);
+        dragRaf = null;
+      }
+
       if (!sidebarTouchRef.current || !sidebarTouchRef.current.active) return;
       const state = sidebarTouchRef.current;
       sidebarTouchRef.current = null;
@@ -615,9 +644,6 @@ export default function App() {
     };
 
     window.addEventListener('touchstart', handleTouchStart, { passive: true });
-    window.addEventListener('touchmove', handleTouchMove, { passive: false });
-    window.addEventListener('touchend', handleTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', handleTouchEnd, { passive: true });
 
     return () => {
       window.removeEventListener('touchstart', handleTouchStart);
@@ -805,20 +831,21 @@ export default function App() {
     return () => window.removeEventListener('auth-session-expired', handleAuthExpired);
   }, []);
 
-  // 1b. User presence heartbeat to signal real-time connectivity
+  // 1b. Sync current user to Call Signaling Service
+  useEffect(() => {
+    callSignalingService.setCurrentUser(currentUser);
+  }, [currentUser]);
+
+  // 1c. User presence heartbeat to signal real-time connectivity (90s interval to prevent DB write lock thrashing)
   useEffect(() => {
     if (!currentUser?.id) return;
     
     let isCancelled = false;
 
     const triggerHeartbeat = async () => {
-      if (isCancelled) return;
+      if (isCancelled || (typeof document !== 'undefined' && document.hidden)) return;
       try {
         await pbService.sendHeartbeat(currentUser.id);
-        const nowIso = new Date().toISOString();
-        if (!isCancelled) {
-          setCurrentUser(prev => prev ? { ...prev, last_seen: nowIso } : prev);
-        }
       } catch (e) {
         console.warn('Presence heartbeat failed:', e);
       }
@@ -826,7 +853,7 @@ export default function App() {
     
     triggerHeartbeat();
     
-    const interval = setInterval(triggerHeartbeat, 25000); // 25 seconds
+    const interval = setInterval(triggerHeartbeat, 90000); // 90 seconds
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -1148,7 +1175,7 @@ export default function App() {
       }, 200);
       return () => clearTimeout(timer);
     }
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   // 4. Fetch channels when active server changes
   useEffect(() => {
@@ -1288,6 +1315,20 @@ export default function App() {
       const currentServer = activeServerRef.current;
 
       if (e.action === 'create' || e.action === 'update') {
+        const rawContent = e.record?.content || '';
+        if (
+          rawContent.startsWith('INCOMING_CALL:') ||
+          rawContent.includes('INCOMING_CALL:') ||
+          rawContent.startsWith('CALL_SIGNAL:') ||
+          rawContent.includes('CALL_SIGNAL:')
+        ) {
+          callSignalingService.handleIncomingCallPayload(rawContent);
+          if (e.record?.id) {
+            pbService.deleteMessage(e.record.id).catch(() => {});
+          }
+          return;
+        }
+
         const senderId = e.record.sender;
         const senderObj = e.record.expand?.sender;
         const senderName = senderObj?.display_name || senderObj?.username || 'User';
@@ -1568,16 +1609,31 @@ export default function App() {
 
       if (!currentCurrUser || !e.record) return;
 
+      const rawContent = e.record.content || '';
+      const isCallSignal =
+        rawContent.startsWith('INCOMING_CALL:') ||
+        rawContent.includes('INCOMING_CALL:') ||
+        rawContent.startsWith('CALL_SIGNAL:') ||
+        rawContent.includes('CALL_SIGNAL:');
+
+      if (isCallSignal) {
+        // Fast-path: immediately handle incoming call signal without delay or blocking user fetch
+        callSignalingService.handleIncomingCallPayload(rawContent);
+        if (e.record.id) {
+          pbService.deletePrivateMessage(e.record.id).catch(() => {});
+        }
+        return;
+      }
+
       const senderId = e.record.sender || e.record.user;
       const isMe = senderId === currentCurrUser.id;
       const chatServerId = e.record.chat_server;
       const dmChannelId = `dm-server-${chatServerId}`;
 
       let fullMsg = e.record;
-      if (!fullMsg.expand?.sender) {
+      if (!fullMsg.expand?.sender && senderId) {
         try {
-          const allUsers = await pbService.fetchAllUsers();
-          const senderObj = allUsers.find((u) => u.id === senderId);
+          const senderObj = await pbService.fetchUserById(senderId);
           if (senderObj) {
             fullMsg.expand = { ...fullMsg.expand, sender: senderObj };
           }
@@ -2792,11 +2848,6 @@ export default function App() {
 
             // In server channels, skip users who left or are inactive in this server
             if (activeServer?.id) {
-              const localIsMem = localStorage.getItem(`is_member_${activeServer.id}_${u.id}`);
-              const localStat = localStorage.getItem(`membership_status_${activeServer.id}_${u.id}`);
-              if (localIsMem === 'false' || localStat === 'left' || localStat === 'banned' || localStat === 'kicked') {
-                return;
-              }
               const memRecord = pbService.getCachedServerMember(activeServer.id, u.id);
               if (memRecord && (memRecord.is_member === false || memRecord.membership_status === 'left' || memRecord.membership_status === 'banned' || memRecord.membership_status === 'kicked')) {
                 return;

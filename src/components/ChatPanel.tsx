@@ -1503,6 +1503,9 @@ function ChatPanel({
           initialIsOpen: showMemberList,
           active: true,
         };
+        window.addEventListener("touchmove", handleTouchMove, { passive: false });
+        window.addEventListener("touchend", handleTouchEnd, { passive: true });
+        window.addEventListener("touchcancel", handleTouchEnd, { passive: true });
       }
     };
 
@@ -1520,6 +1523,9 @@ function ChatPanel({
         if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 8) {
           state.axis = "vertical";
           state.active = false;
+          window.removeEventListener("touchmove", handleTouchMove);
+          window.removeEventListener("touchend", handleTouchEnd);
+          window.removeEventListener("touchcancel", handleTouchEnd);
           return;
         } else if (
           Math.abs(deltaX) > Math.abs(deltaY) &&
@@ -1537,6 +1543,10 @@ function ChatPanel({
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchcancel", handleTouchEnd);
+
       if (!memberListTouchRef.current || !memberListTouchRef.current.active)
         return;
       const state = memberListTouchRef.current;
@@ -1575,9 +1585,6 @@ function ChatPanel({
     };
 
     window.addEventListener("touchstart", handleTouchStart, { passive: true });
-    window.addEventListener("touchmove", handleTouchMove, { passive: false });
-    window.addEventListener("touchend", handleTouchEnd, { passive: true });
-    window.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
     return () => {
       window.removeEventListener("touchstart", handleTouchStart);
@@ -1718,6 +1725,23 @@ function ChatPanel({
     pbService.getCachedUsers()
   );
 
+  const allUsersMap = React.useMemo(() => {
+    const map = new Map<string, User>();
+    for (const u of allUsersList) {
+      if (u?.id) map.set(u.id, u);
+    }
+    return map;
+  }, [allUsersList]);
+
+  const userNameLookupMap = React.useMemo(() => {
+    const map = new Map<string, User>();
+    for (const u of allUsersList) {
+      if (u.username) map.set(u.username.toLowerCase(), u);
+      if (u.display_name) map.set(u.display_name.toLowerCase(), u);
+    }
+    return map;
+  }, [allUsersList]);
+
   const loadServerMembersData = React.useCallback(
     async (forceRefresh = false) => {
       const sId = targetServerId;
@@ -1810,23 +1834,25 @@ function ChatPanel({
     window.addEventListener("server-member-updated", handleServerMemberUpdated);
     window.addEventListener("user-presence-changed", handleUserPresenceChanged);
 
-    // Periodic evaluation timer to refresh presence status (e.g. timeout after 90s heartbeat)
+    // Periodic evaluation timer to refresh presence status (e.g. timeout after 2m heartbeat)
     const presenceTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       setAllUsersList((prev) => {
-        let changed = false;
+        let hasChanges = false;
         const now = Date.now();
-        for (const u of prev) {
-          if (u.last_seen) {
+        const updated = prev.map((u) => {
+          if (u.last_seen && u.status !== 'offline') {
             const diff = now - new Date(u.last_seen).getTime();
-            if (diff > 90000 && u.status !== "offline") {
-              changed = true;
-              break;
+            if (diff > 120000) {
+              hasChanges = true;
+              return { ...u, status: 'offline' as const };
             }
           }
-        }
-        return changed ? [...prev] : prev;
+          return u;
+        });
+        return hasChanges ? updated : prev;
       });
-    }, 15000);
+    }, 60000);
 
     return () => {
       window.removeEventListener(
@@ -1892,19 +1918,6 @@ function ChatPanel({
         ) {
           return;
         }
-      } else {
-        const localIsMem = localStorage.getItem(`is_member_${sObj.id}_${u.id}`);
-        const localStat = localStorage.getItem(
-          `membership_status_${sObj.id}_${u.id}`,
-        );
-        if (
-          localIsMem === "false" ||
-          localStat === "left" ||
-          localStat === "banned" ||
-          localStat === "kicked"
-        ) {
-          return;
-        }
       }
 
       processedUserIds.add(u.id);
@@ -1913,9 +1926,7 @@ function ChatPanel({
       const eff = getEffectiveProfile(u, sObj.id, memRecord);
 
       const primary = getPrimaryServerRole(
-        memRecord?.role_id ||
-          memRecord?.role ||
-          localStorage.getItem(`member_role_${sObj.id}_${u.id}`),
+        memRecord?.role_id || memRecord?.role,
         serverRoles,
         isOwner,
         u.role,
@@ -2093,7 +2104,7 @@ function ChatPanel({
         return channel.recipientUser;
 
       const cached =
-        pbService.getCachedUser(sId) || allUsersList.find((u) => u.id === sId);
+        pbService.getCachedUser(sId) || allUsersMap.get(sId);
       if (cached) return cached;
 
       const mem =
@@ -2109,7 +2120,7 @@ function ChatPanel({
     [
       currentUser,
       channel?.recipientUser,
-      allUsersList,
+      allUsersMap,
       serverMembersMap,
       server?.id,
     ],
@@ -2122,7 +2133,7 @@ function ChatPanel({
         senderUser ||
         (sId
           ? pbService.getCachedUser(sId) ||
-            allUsersList.find((u) => u.id === sId)
+            allUsersMap.get(sId)
           : null);
 
       if (effectiveUser) {
@@ -2144,7 +2155,7 @@ function ChatPanel({
 
       return "User";
     },
-    [isDmChannel, server?.id, serverMembersMap, allUsersList, currentUser],
+    [isDmChannel, server?.id, serverMembersMap, allUsersMap, currentUser],
   );
 
   const getMemberAvatarUrl = React.useCallback(
@@ -2154,7 +2165,7 @@ function ChatPanel({
         senderUser ||
         (sId
           ? pbService.getCachedUser(sId) ||
-            allUsersList.find((u) => u.id === sId)
+            allUsersMap.get(sId)
           : null);
 
       if (!effectiveUser) return "";
@@ -2167,7 +2178,7 @@ function ChatPanel({
       }
       return getAvatarUrl(effectiveUser);
     },
-    [isDmChannel, server?.id, serverMembersMap, allUsersList],
+    [isDmChannel, server?.id, serverMembersMap, allUsersMap],
   );
 
   const getMemberRoleColor = React.useCallback(
@@ -2178,9 +2189,7 @@ function ChatPanel({
         pbService.getCachedServerMember(server.id, senderUser.id);
       const isOwner = server.owner === senderUser.id;
       const primary = getPrimaryServerRole(
-        memRecord?.role_id ||
-          memRecord?.role ||
-          localStorage.getItem(`member_role_${server.id}_${senderUser.id}`),
+        memRecord?.role_id || memRecord?.role,
         serverRoles,
         isOwner,
         senderUser.role,
@@ -3220,25 +3229,7 @@ function ChatPanel({
                 ((channel.recipientUser.username || "").toLowerCase() === uLower ||
                   (channel.recipientUser.display_name || "").toLowerCase() === uLower)
               ? channel.recipientUser
-              : mentionUsers.find(
-                  (u) =>
-                    (u.username || "").toLowerCase() === uLower ||
-                    (u.display_name || "").toLowerCase() === uLower,
-                ) ||
-                allUsersList.find(
-                  (u) =>
-                    (u.username || "").toLowerCase() === uLower ||
-                    (u.display_name || "").toLowerCase() === uLower,
-                );
-
-        if (!foundUser) {
-          const cachedUsers = pbService.getCachedUsers();
-          foundUser = cachedUsers.find(
-            (u) =>
-              (u.username || "").toLowerCase() === uLower ||
-              (u.display_name || "").toLowerCase() === uLower,
-          );
-        }
+              : userNameLookupMap.get(uLower) || null;
 
         if (foundUser) {
           const memRecord =
@@ -3246,27 +3237,15 @@ function ChatPanel({
             (server?.id
               ? pbService.getCachedServerMember(server.id, foundUser.id)
               : null);
-          const localIsMem = server?.id
-            ? localStorage.getItem(`is_member_${server.id}_${foundUser.id}`)
-            : null;
-          const localStat = server?.id
-            ? localStorage.getItem(
-                `membership_status_${server.id}_${foundUser.id}`,
-              )
-            : null;
 
           const isLeft =
             !isDmChannel &&
             server?.id &&
-            (localIsMem === "false" ||
-              localStat === "left" ||
-              localStat === "banned" ||
-              localStat === "kicked" ||
-              (memRecord &&
-                (memRecord.is_member === false ||
-                  memRecord.membership_status === "left" ||
-                  memRecord.membership_status === "banned" ||
-                  memRecord.membership_status === "kicked")));
+            memRecord &&
+            (memRecord.is_member === false ||
+              memRecord.membership_status === "left" ||
+              memRecord.membership_status === "banned" ||
+              memRecord.membership_status === "kicked");
 
           if (isLeft) {
             parts.push(
@@ -3319,11 +3298,7 @@ function ChatPanel({
               onClick={async (e) => {
                 e.stopPropagation();
                 const anchorEl = e.currentTarget;
-                let target = allUsersList.find(
-                  (u) =>
-                    (u.username || "").toLowerCase() === uLower ||
-                    (u.display_name || "").toLowerCase() === uLower,
-                );
+                let target = userNameLookupMap.get(uLower);
                 if (!target) {
                   try {
                     const fetched = await pbService.fetchAllUsers(true);

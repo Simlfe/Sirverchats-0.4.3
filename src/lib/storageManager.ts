@@ -17,14 +17,23 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'app_player_volume',
 ]);
 
+let lastCleanupTime = 0;
+
 /**
  * Proactively cleans up disposable and oversized items from localStorage
  * to ensure adequate free space for authentication and essential settings.
+ * Throttled to prevent blocking the UI thread with repeated scans.
  */
 export function cleanupStorageQuota(): { freedBytes: number; purgedKeys: string[] } {
   if (typeof window === 'undefined' || !window.localStorage) {
     return { freedBytes: 0, purgedKeys: [] };
   }
+
+  const now = Date.now();
+  if (now - lastCleanupTime < 30000) {
+    return { freedBytes: 0, purgedKeys: [] };
+  }
+  lastCleanupTime = now;
 
   let freedBytes = 0;
   const purgedKeys: string[] = [];
@@ -365,21 +374,4 @@ export class ResilientAuthStore extends BaseAuthStore {
       });
     }
   }
-}
-
-// Proactively run an initial cleanup on module load if localStorage exists
-if (typeof window !== 'undefined' && window.localStorage) {
-  try {
-    let totalLength = 0;
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const k = window.localStorage.key(i);
-      if (k) {
-        totalLength += (window.localStorage.getItem(k)?.length || 0);
-      }
-    }
-    // If usage exceeds ~1.5MB (approx 1.5M chars), clean up preemptively to keep plenty of headroom
-    if (totalLength > 1500000) {
-      cleanupStorageQuota();
-    }
-  } catch (_) {}
 }

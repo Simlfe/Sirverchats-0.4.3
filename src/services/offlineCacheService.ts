@@ -91,9 +91,6 @@ class OfflineCacheService {
         req.onsuccess = () => {
           if (req.result && Array.isArray(req.result.servers)) {
             this.memServers.set(userId, req.result.servers);
-            try {
-              localStorage.setItem(`offline_servers_${userId}`, JSON.stringify(req.result.servers));
-            } catch (e) {}
             resolve(req.result.servers);
           } else {
             resolve(null);
@@ -109,9 +106,6 @@ class OfflineCacheService {
 
   async saveServers(userId: string, servers: Server[]): Promise<void> {
     this.memServers.set(userId, servers);
-    try {
-      localStorage.setItem(`offline_servers_${userId}`, JSON.stringify(servers));
-    } catch (e) {}
 
     try {
       const db = await this.getDB();
@@ -158,9 +152,6 @@ class OfflineCacheService {
         req.onsuccess = () => {
           if (req.result && Array.isArray(req.result.channels)) {
             this.memChannels.set(serverId, req.result.channels);
-            try {
-              localStorage.setItem(`offline_channels_${serverId}`, JSON.stringify(req.result.channels));
-            } catch (e) {}
             resolve(req.result.channels);
           } else {
             resolve(null);
@@ -176,9 +167,6 @@ class OfflineCacheService {
 
   async saveChannels(serverId: string, channels: Channel[]): Promise<void> {
     this.memChannels.set(serverId, channels);
-    try {
-      localStorage.setItem(`offline_channels_${serverId}`, JSON.stringify(channels));
-    } catch (e) {}
 
     try {
       const db = await this.getDB();
@@ -225,9 +213,6 @@ class OfflineCacheService {
         req.onsuccess = () => {
           if (req.result && Array.isArray(req.result.channels)) {
             this.memDmChannels.set(userId, req.result.channels);
-            try {
-              localStorage.setItem(`offline_dms_${userId}`, JSON.stringify(req.result.channels));
-            } catch (e) {}
             resolve(req.result.channels);
           } else {
             resolve(null);
@@ -243,9 +228,6 @@ class OfflineCacheService {
 
   async saveDmChannels(userId: string, channels: Channel[]): Promise<void> {
     this.memDmChannels.set(userId, channels);
-    try {
-      localStorage.setItem(`offline_dms_${userId}`, JSON.stringify(channels));
-    } catch (e) {}
 
     try {
       const db = await this.getDB();
@@ -396,11 +378,14 @@ class OfflineCacheService {
     }
 
     // Sort strictly by created timestamp ascending
-    const mergedList = Array.from(existingMap.values()).sort((a, b) => {
+    const sortedList = Array.from(existingMap.values()).sort((a, b) => {
       const tA = new Date(a.created || 0).getTime();
       const tB = new Date(b.created || 0).getTime();
       return tA - tB;
     });
+
+    // Keep most recent 150 messages for cache efficiency and fast IndexedDB writes
+    const mergedList = sortedList.length > 150 ? sortedList.slice(sortedList.length - 150) : sortedList;
 
     const finalHasMore = hasMore !== undefined ? hasMore : cached.hasMore;
     const finalPage = page !== undefined ? Math.max(page, cached.page) : cached.page;

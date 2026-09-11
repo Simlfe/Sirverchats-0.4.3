@@ -132,11 +132,27 @@ export const MediaProvider: React.FC<{
   }, [propCurrentUser]);
 
   useEffect(() => {
+    if (!activeRoom || !isCameraEnabled) {
+      return;
+    }
     const timer = setInterval(() => {
-      setCameraTelemetry(realtimeMediaProvider.getActiveCameraTelemetry());
-    }, 1000);
+      const telemetry = realtimeMediaProvider.getActiveCameraTelemetry();
+      setCameraTelemetry((prev) => {
+        if (!prev && !telemetry) return null;
+        if (
+          prev &&
+          telemetry &&
+          prev.actualFps === telemetry.actualFps &&
+          prev.currentEstimatedBitrateBps === telemetry.currentEstimatedBitrateBps &&
+          prev.actualCaptureResolution === telemetry.actualCaptureResolution
+        ) {
+          return prev;
+        }
+        return telemetry;
+      });
+    }, 2000);
     return () => clearInterval(timer);
-  }, []);
+  }, [activeRoom, isCameraEnabled]);
 
   const setCameraQualityProfile = useCallback((profile: CameraQualityProfile) => {
     realtimeMediaProvider.setCameraQualityProfile(profile);
@@ -229,7 +245,7 @@ export const MediaProvider: React.FC<{
   useEffect(() => {
     const unsubSignal = callSignalingService.subscribe(async (event) => {
       queueMicrotask(async () => {
-        const activeUser = currentUserRef.current || pbService.getCurrentUser();
+        const activeUser = currentUserRef.current || currentUser || pbService.getCurrentUser() || callSignalingService.getCurrentUser();
         const activeUserId = activeUser?.id;
         const myId = String(activeUserId || '').trim();
         const callerId = String(event.callerId || event.callerUser?.id || '').trim();
@@ -240,7 +256,7 @@ export const MediaProvider: React.FC<{
           if (myId && callerId === myId) {
             setOutgoingCall(event);
             setIncomingCall(null);
-          } else if (myId && targetUserId === myId && callerId !== myId) {
+          } else if (callerId !== myId && (!targetUserId || !myId || targetUserId === myId)) {
             setIncomingCall(event);
             setOutgoingCall(null);
           }
