@@ -64,6 +64,17 @@ import type { AnchorRect } from './components/UserProfileModal';
 
 const EMPTY_ACTIVE_CALLS: Call[] = [];
 
+// Keep lazy chunks from looking like a broken/white page on slower phones.
+// This component deliberately uses only inline classes and no lazy imports.
+const AppLoadingFallback = ({ compact = false }: { compact?: boolean }) => (
+  <div className="flex h-full w-full min-h-[72px] items-center justify-center bg-[var(--theme-bg-primary)] text-[var(--theme-text-secondary)]">
+    <div className={`flex items-center gap-2 ${compact ? 'text-[10px]' : 'text-xs'} font-medium`}>
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
+      {!compact && <span>Loading SirverData…</span>}
+    </div>
+  </div>
+);
+
 function extractResetTokenFromUrl(urlStr?: string): string | null {
   if (typeof window === 'undefined') return null;
   const target = urlStr || window.location.href;
@@ -396,8 +407,11 @@ export default function App() {
   const channelsCache = useRef<Record<string, Channel[]>>({});
   const messagesCache = useRef<Record<string, { items: Message[]; page: number; hasMore: boolean }>>({});
   const serverMessagesCache = useRef<Record<string, Message[]>>({});
+  const serverMessageFreshnessRef = useRef<Record<string, number>>({});
+  const messageCacheFreshnessRef = useRef<Record<string, number>>({});
   const loadMessagesSeqRef = useRef<number>(0);
   const stagedLoadTimerRef = useRef<any>(null);
+  const messageCacheTtlMs = 15000;
 
   // Refs for tracking changes without triggering re-renders in effects
   const channelsRef = useRef<Channel[]>([]);
@@ -846,7 +860,7 @@ export default function App() {
     // Do not open a persistent chat socket for the auth screen or guests.
     // The connection starts only after a valid session is present.
     if (currentUser?.id) {
-      wsService.connect();
+      wsService.connect(currentUser.id);
     } else {
       wsService.disconnect();
     }
@@ -1130,8 +1144,10 @@ export default function App() {
 
     // 3. Non-blocking background sync from PocketBase
     try {
-      const userChatServers = await pbService.getUserPrivateChatServers();
-      const allUsers = await pbService.fetchAllUsers();
+      const [userChatServers, allUsers] = await Promise.all([
+        pbService.getUserPrivateChatServers(),
+        pbService.fetchAllUsers(),
+      ]);
       const currentId = currentUser?.id;
 
       const dynamicDmChannels: Channel[] = [];
@@ -1233,7 +1249,7 @@ export default function App() {
       }
 
       let cached = messagesCache.current[activeChannel.id] || offlineCacheService.getCachedMessagesSync(activeChannel.id);
-      if (!cached || !cached.items || cached.items.length === 0) {
+      if (!cached || !Array.isArray(cached.items)) {
         const isDm = activeChannel.server === 'dm' || activeChannel.name?.startsWith('@') || activeChannel.id.startsWith('dm-');
         if (isDm) {
           const recipientId = activeChannel.recipientUser?.id;
@@ -1299,8 +1315,12 @@ export default function App() {
     const serverId = activeServer.id;
 
     const timer = setTimeout(async () => {
-      if (serverMessagesCache.current[serverId]) {
-        setServerMessages(serverMessagesCache.current[serverId]);
+      const cached = serverMessagesCache.current[serverId];
+      if (cached) {
+        setServerMessages(cached);
+        if (Date.now() - (serverMessageFreshnessRef.current[serverId] || 0) < 30000) {
+          return;
+        }
       } else {
         setServerMessages([]);
       }
@@ -1308,6 +1328,7 @@ export default function App() {
       try {
         const list = await pbService.fetchServerMessages(serverId);
         serverMessagesCache.current[serverId] = list;
+        serverMessageFreshnessRef.current[serverId] = Date.now();
         if (activeServerRef.current?.id === serverId) {
           setServerMessages(list);
         }
@@ -1351,6 +1372,9 @@ export default function App() {
         const isMe = currentCurrUser && senderId === currentCurrUser.id;
 
         const fullMsg = e.record;
+        if (fullMsg?.channel) {
+          messageCacheFreshnessRef.current[fullMsg.channel] = Date.now();
+        }
         // Only fetch expanded details on 'create' if missing; existing updated messages already have sender/attachments
         if (e.action === 'create' && (!e.record.expand?.sender || !e.record.expand?.['attachments(message)'])) {
           pbService.getMessageById(e.record.id).then((fetchedMsg) => {
@@ -1510,6 +1534,7 @@ export default function App() {
         }
 
         if (currentServer) {
+          serverMessageFreshnessRef.current[currentServer.id] = Date.now();
           setServerMessages((prev) => {
             const existingIdx = prev.findIndex((m) => m.id === fullMsg.id);
             if (existingIdx === -1) {
@@ -1665,6 +1690,7 @@ export default function App() {
       ));
 
       const targetChanId = currentActiveChan && isCurrentlyViewingDM ? currentActiveChan.id : dmChannelId;
+      messageCacheFreshnessRef.current[targetChanId] = Date.now();
 
       if (e.action === 'create') {
         const msgWithChannel = { ...fullMsg, channel: targetChanId };
@@ -2119,6 +2145,7 @@ export default function App() {
 
   const loadMessages = async (channelId: string, pageNum = 1, append = false, targetMessageId: string | null = null, limit = 10) => {
     const currentReqSeq = ++loadMessagesSeqRef.current;
+    let canUseFreshCache = false;
     const targetChan = activeChannelRef.current?.id === channelId ? activeChannelRef.current : channels.find((c) => c.id === channelId);
     if (targetChan?.type === 'voice') {
       if (activeChannelRef.current?.id === channelId) {
@@ -2154,10 +2181,12 @@ export default function App() {
 
       // 1. Check synchronous in-memory L1 cache first
       let cached: any = null;
+      let cachedKey = channelId;
       for (const k of altKeys) {
         const hit = messagesCache.current[k] || offlineCacheService.getCachedMessagesSync(k);
         if (hit && Array.isArray(hit.items)) {
           cached = hit;
+          cachedKey = k;
           messagesCache.current[channelId] = hit;
           break;
         }
@@ -2174,6 +2203,7 @@ export default function App() {
                 page: dbCached.page,
                 hasMore: dbCached.hasMore !== undefined ? dbCached.hasMore : false
               };
+              cachedKey = k;
               messagesCache.current[channelId] = cached;
               break;
             }
@@ -2207,6 +2237,24 @@ export default function App() {
           setIsInitialLoadingChannel(true);
         }
       }
+
+      // Re-selecting a recently viewed channel should be instant. Realtime
+      // subscriptions keep this cache current; only refresh after it becomes
+      // stale so toggling Server/DM mode does not issue duplicate queries.
+      const cachedAt = Math.max(
+        messageCacheFreshnessRef.current[channelId] || 0,
+        messageCacheFreshnessRef.current[cachedKey] || 0,
+        ...altKeys.map((key) => messageCacheFreshnessRef.current[key] || 0),
+      );
+      canUseFreshCache = Boolean(
+        cached && Array.isArray(cached.items) &&
+        cachedAt > 0 && Date.now() - cachedAt < messageCacheTtlMs &&
+        !targetMessageId
+      );
+    }
+
+    if (canUseFreshCache) {
+      return;
     }
 
     const isDmChan = activeChannelRef.current?.name.startsWith('@') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.id.startsWith('dm-') || activeServerRef.current?.name === 'Direct Messages' || activeServerRef.current?.name === 'الرسائل الخاصة';
@@ -2264,8 +2312,14 @@ export default function App() {
                 hasMore: dms.length > 0 ? hasMore : false
               };
               messagesCache.current[channelId] = cacheData;
-              if (chatServerId) messagesCache.current[`dm-server-${chatServerId}`] = cacheData;
+              const cacheTimestamp = Date.now();
+              messageCacheFreshnessRef.current[channelId] = cacheTimestamp;
+              if (chatServerId) {
+                messagesCache.current[`dm-server-${chatServerId}`] = cacheData;
+                messageCacheFreshnessRef.current[`dm-server-${chatServerId}`] = cacheTimestamp;
+              }
               messagesCache.current[`dm-user-${targetUser.id}`] = cacheData;
+              messageCacheFreshnessRef.current[`dm-user-${targetUser.id}`] = cacheTimestamp;
               if (dms.length === 0) {
                 offlineCacheService.saveCachedMessages(channelId, [], false, 1);
                 if (chatServerId) offlineCacheService.saveCachedMessages(`dm-server-${chatServerId}`, [], false, 1);
@@ -2361,6 +2415,7 @@ export default function App() {
             );
           } else {
             const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, true, pageNum);
+            messageCacheFreshnessRef.current[channelId] = Date.now();
             
             // Check if server totalItems indicates more older records exist
             const hasMore = result.totalItems > result.items.length || result.items.length >= limit;
@@ -2401,6 +2456,7 @@ export default function App() {
           const hasMore = result.totalPages > 1 && result.totalItems > result.items.length;
           const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, hasMore, 1);
           messagesCache.current[channelId] = { items: merged.items, page: 1, hasMore };
+          messageCacheFreshnessRef.current[channelId] = Date.now();
           if (activeChannelRef.current?.id === channelId && (append || loadMessagesSeqRef.current === currentReqSeq)) {
             setMessages((prev) => mergeMessageListPreservingReferences(prev, merged.items));
             setHasMoreMessages(hasMore);
@@ -2432,6 +2488,7 @@ export default function App() {
           page: 1,
           hasMore
         };
+        messageCacheFreshnessRef.current[channelId] = Date.now();
 
         if (activeChannelRef.current?.id === channelId && (append || loadMessagesSeqRef.current === currentReqSeq)) {
           setMessages((prev) => {
@@ -3134,9 +3191,30 @@ export default function App() {
         return copy;
       });
 
-      // 1. Immediately populate messages from synchronous L1 / memory cache (0ms)
-      const cached = messagesCache.current[channel.id] || offlineCacheService.getCachedMessagesSync(channel.id);
-      if (cached && cached.items && cached.items.length > 0) {
+      // 1. Immediately populate messages from synchronous L1 / memory cache (0ms).
+      // DMs can be represented by either the private-chat server id or the
+      // recipient id, so resolve all aliases before showing a loading state.
+      let cached: any = messagesCache.current[channel.id] || offlineCacheService.getCachedMessagesSync(channel.id);
+      const isDmChannel = channel.server === 'dm' || channel.name.startsWith('@') || channel.id.startsWith('dm-');
+      if ((!cached || !Array.isArray(cached.items)) && isDmChannel) {
+        const recipientId = channel.recipientUser?.id;
+        const serverId = channel.id.startsWith('dm-server-') ? channel.id.replace('dm-server-', '') : null;
+        const altKeys = [
+          serverId ? `dm-server-${serverId}` : null,
+          serverId,
+          recipientId ? `dm-user-${recipientId}` : null,
+          recipientId,
+        ].filter(Boolean) as string[];
+        for (const key of altKeys) {
+          const hit = messagesCache.current[key] || offlineCacheService.getCachedMessagesSync(key);
+          if (hit && Array.isArray(hit.items)) {
+            cached = hit;
+            messagesCache.current[channel.id] = hit;
+            break;
+          }
+        }
+      }
+      if (cached && Array.isArray(cached.items)) {
         messagesCache.current[channel.id] = cached;
         const initial10 = cached.items.slice(Math.max(0, cached.items.length - 10));
         setMessages(initial10);
@@ -3430,8 +3508,9 @@ export default function App() {
 
       if (cached && Array.isArray(cached.items)) {
         messagesCache.current[dmChannel.id] = cached;
-        setMessages(cached.items);
-        setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : false);
+        const initialCached = cached.items.slice(Math.max(0, cached.items.length - 20));
+        setMessages(initialCached);
+        setHasMoreMessages(cached.hasMore !== undefined ? cached.hasMore : (cached.items.length > initialCached.length));
         setMessagesPage(cached.page || 1);
         setIsInitialLoadingChannel(false);
       } else {
@@ -3981,7 +4060,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="w-full h-full"
             >
-              <Suspense fallback={null}>
+              <Suspense fallback={<AppLoadingFallback />}>
                 <ResetPasswordScreen
                   token={resetToken}
                   onComplete={() => {
@@ -4010,7 +4089,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="w-full h-full"
             >
-              <Suspense fallback={null}>
+              <Suspense fallback={<AppLoadingFallback />}>
                 <AuthScreen
                   onAuthSuccess={(user) => {
                     setCurrentUser(user);
@@ -4078,7 +4157,7 @@ export default function App() {
             {/* Desktop Static Sidebar */}
             {!isMobile && (
               <div className="hidden md:flex md:relative md:inset-auto md:z-auto w-80 h-full shrink-0">
-                <Suspense fallback={null}>
+                <Suspense fallback={<AppLoadingFallback compact />}>
                   <ChannelList
                   servers={servers}
                   activeServer={activeServer}
@@ -4191,7 +4270,7 @@ export default function App() {
                     data-mobile-drawer="channels"
                     className={`fixed inset-y-0 ${lang === 'ar' ? 'right-0 border-l' : 'left-0 border-r'} border-[var(--theme-border)] z-[70] w-[78vw] max-w-[320px] sm:w-[50vw] sm:max-w-[340px] md:w-80 shrink-0 md:hidden bg-[var(--theme-bg-secondary)] text-[var(--theme-text-primary)] flex flex-col overflow-hidden shadow-2xl mobile-drawer-panel`}
                   >
-                    <Suspense fallback={null}>
+                    <Suspense fallback={<AppLoadingFallback compact />}>
                       <ChannelList
                       servers={servers}
                       activeServer={activeServer}
@@ -4360,7 +4439,7 @@ export default function App() {
                         : null);
 
                     return (
-                      <Suspense fallback={null}>
+                      <Suspense fallback={<AppLoadingFallback compact />}>
                         <ChatPanel
                           key={`chat-panel-${currentChatChannel.id}`}
                           isActive={true}

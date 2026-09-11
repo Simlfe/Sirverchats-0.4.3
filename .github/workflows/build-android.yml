@@ -35,7 +35,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          wrapper-validation-enabled: false
+          validate-wrappers: false
+
+      - name: Install Android SDK platform 36
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" || \
+            yes | sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
       - name: Accept Android SDK Licenses
         run: |
@@ -43,8 +48,7 @@ jobs:
 
       - name: Install Frontend Dependencies
         run: |
-          rm -f package-lock.json
-          npm install
+          npm ci --no-audit --no-fund
 
       - name: Build Web Assets
         run: npm run build
@@ -58,7 +62,7 @@ jobs:
 
       - name: Build Android Debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace || gradle assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload Android Debug APK
         uses: actions/upload-artifact@v6

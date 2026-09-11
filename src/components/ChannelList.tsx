@@ -792,13 +792,13 @@ function ChannelList({
 
       {/* Channel & DM List Area */}
       <div className="flex-1 overflow-y-auto p-3 scrollbar-thin flex flex-col justify-start min-h-0">
-        <AnimatePresence mode="wait" initial={false}>
+        <AnimatePresence initial={false}>
           <motion.div
             key={sidebarTab}
             initial={{ opacity: 0, x: (sidebarTab === 'servers' ? -8 : 8) * (lang === 'ar' ? -1 : 1) }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: (sidebarTab === 'servers' ? 8 : -8) * (lang === 'ar' ? -1 : 1) }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
             className="w-full space-y-4"
           >
         {sidebarTab === 'servers' ? (

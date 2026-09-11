@@ -598,6 +598,8 @@ class PocketBaseService {
   private lastUsersFetch: number = 0;
   private privateChatServerCache: Map<string, any> = new Map();
   private dmMessagesCache: Map<string, Message[]> = new Map();
+  private dmLastBackgroundSync: Map<string, number> = new Map();
+  private dmSyncInFlight: Set<string> = new Set();
   private serverChannelsCache: Map<string, Channel[]> = new Map();
   private dmChannelsCache: Map<string, Channel[]> = new Map();
   private channelMetaCache: Map<string, { record: any; timestamp: number }> = new Map();
@@ -3548,6 +3550,13 @@ class PocketBaseService {
 
   private syncDirectMessagesInBackground(recipientId: string, targetServerId: string) {
     if (this.isDemo || !targetServerId) return;
+    const now = Date.now();
+    const lastSync = this.dmLastBackgroundSync.get(targetServerId) || 0;
+    // A channel switch can call fetchDirectMessages several times in quick
+    // succession. Keep the first refresh, but coalesce the rest for 15s.
+    if (now - lastSync < 15000 || this.dmSyncInFlight.has(targetServerId)) return;
+    this.dmLastBackgroundSync.set(targetServerId, now);
+    this.dmSyncInFlight.add(targetServerId);
     this.pb.collection('private_messages').getList(1, 40, {
       filter: `chat_server = "${targetServerId}"`,
       sort: '-created',
@@ -3567,7 +3576,9 @@ class PocketBaseService {
         offlineCacheService.saveCachedMessages(`dm-server-${targetServerId}`, processed, false, 1);
         if (recipientId) offlineCacheService.saveCachedMessages(`dm-user-${recipientId}`, processed, false, 1);
       }
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => {
+      this.dmSyncInFlight.delete(targetServerId);
+    });
   }
 
   async fetchDirectMessages(recipientId: string, chatServerId?: string, forceRefresh: boolean = false): Promise<Message[]> {

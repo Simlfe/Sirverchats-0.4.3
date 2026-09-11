@@ -131,7 +131,7 @@ pub fn run() {
             {
                 for window in app.webview_windows().values() {
                     let _ = window.with_webview(|webview| {
-                        use webkit2gtk::traits::{PermissionRequestExt, SettingsExt, WebViewExt};
+                        use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
                         let inner = webview.inner();
                         if let Some(settings) = inner.settings() {
                             settings.set_enable_webrtc(true);

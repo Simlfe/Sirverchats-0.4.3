@@ -247,7 +247,14 @@ class CallSignalingService {
       type: 'call_accept',
       channelId: conversationId,
       userId: callerId,
-      callData: { callId, state: 'accepted', callerId, conversationId },
+      callData: {
+        callId,
+        state: 'accepted',
+        callerId,
+        targetUserId: baseEvent.targetUserId || user?.id,
+        callType: baseEvent.callType,
+        conversationId,
+      },
     });
 
     if (callerId && user?.id && callerId !== user.id) {
@@ -306,8 +313,15 @@ class CallSignalingService {
     wsService.send({
       type: 'call_decline',
       channelId: currentEvent.conversationId,
-      userId: currentEvent.callerId,
-      callData: { callId, state },
+      userId: counterpartId || currentEvent.callerId,
+      callData: {
+        callId,
+        state,
+        callerId: currentEvent.callerId,
+        targetUserId: currentEvent.targetUserId || currentEvent.targetUser?.id,
+        callType: currentEvent.callType,
+        conversationId: currentEvent.conversationId,
+      },
     });
 
     if (counterpartId && user?.id && counterpartId !== user.id) {
@@ -367,7 +381,15 @@ class CallSignalingService {
     wsService.send({
       type: 'call_cancel',
       channelId: currentEvent.conversationId,
-      callData: { callId, state },
+      userId: counterpartId || currentEvent.callerId,
+      callData: {
+        callId,
+        state,
+        callerId: currentEvent.callerId,
+        targetUserId: currentEvent.targetUserId || currentEvent.targetUser?.id,
+        callType: currentEvent.callType,
+        conversationId: currentEvent.conversationId,
+      },
     });
 
     if (counterpartId && user?.id && counterpartId !== user.id) {
@@ -426,7 +448,15 @@ class CallSignalingService {
     wsService.send({
       type: 'call_end',
       channelId: currentEvent.conversationId,
-      callData: { callId, state: 'ended' },
+      userId: counterpartId || currentEvent.callerId,
+      callData: {
+        callId,
+        state: 'ended',
+        callerId: currentEvent.callerId,
+        targetUserId: currentEvent.targetUserId || currentEvent.targetUser?.id,
+        callType: currentEvent.callType,
+        conversationId: currentEvent.conversationId,
+      },
     });
 
     if (counterpartId && user?.id && counterpartId !== user.id) {
@@ -540,7 +570,14 @@ class CallSignalingService {
           type: 'call_busy',
           channelId: data.conversationId,
           userId: data.callerId,
-          callData: { callId: data.callId, state: 'busy' },
+          callData: {
+            callId: data.callId,
+            state: 'busy',
+            callerId: data.callerId,
+            targetUserId: data.targetUserId || user.id,
+            callType: data.callType,
+            conversationId: data.conversationId,
+          },
         });
         return;
       }
@@ -586,8 +623,19 @@ class CallSignalingService {
     const user = this.getCurrentUser();
     if (!user) return;
 
-    const data = evt.callData;
+    let data = evt.callData || (evt as any).data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch { data = null; }
+    }
     const myId = String(user.id || '').trim();
+
+    // Ignore signals that are not addressed to either participant. This is a
+    // second line of defence for older servers that still broadcast frames.
+    if (data && typeof data === 'object') {
+      const callerId = String(data.callerId || data.caller_id || '').trim();
+      const targetId = String(data.targetUserId || data.target_user_id || '').trim();
+      if ((callerId || targetId) && callerId !== myId && targetId !== myId) return;
+    }
 
     switch (evt.type) {
       case 'call_invite': {
@@ -605,7 +653,14 @@ class CallSignalingService {
             type: 'call_busy',
             channelId: data.conversationId,
             userId: data.callerId,
-            callData: { callId: data.callId, state: 'busy' },
+            callData: {
+              callId: data.callId,
+              state: 'busy',
+              callerId: data.callerId,
+              targetUserId: data.targetUserId || user.id,
+              callType: data.callType,
+              conversationId: data.conversationId,
+            },
           });
           return;
         }
@@ -719,4 +774,3 @@ class CallSignalingService {
 
 export const callSignalingService = new CallSignalingService();
 export default callSignalingService;
-
