@@ -1,6 +1,7 @@
 import { DEFAULT_BUILTIN_THEMES, PRESET_WALLPAPERS, WallpaperPreset } from './builtinThemes';
 import { AVAILABLE_FONTS, DEFAULT_LAYOUT_SETTINGS, FontOption, createThemeLayout } from './themeDefaults';
 import { pbService, getAttachmentUrl } from '../pocketbase';
+import { ensureGoogleFontsLoaded } from '../services/fontLoader';
 export { DEFAULT_BUILTIN_THEMES, DEFAULT_LAYOUT_SETTINGS, PRESET_WALLPAPERS, type WallpaperPreset, AVAILABLE_FONTS, type FontOption, createThemeLayout };
 
 export interface ThemeTokenGroup {
@@ -815,6 +816,10 @@ export function applyThemeTokensAndLayout(
           : (layout.typography.fontChat || family)
       );
 
+      // Keep the first paint on the small core font set. Optional theme fonts
+      // are fetched only after a user/admin actually selects them.
+      ensureGoogleFontsLoaded(family, headings, chat);
+
       newProps.set('--font-family', family);
       newProps.set('--font-family-headings', headings);
       newProps.set('--font-family-chat', chat);
@@ -1313,4 +1318,3 @@ export async function saveWallpaperUrlToServer(
   saveCustomWallpaper(fallbackPreset);
   return fallbackPreset;
 }
-

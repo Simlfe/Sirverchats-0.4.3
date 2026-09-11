@@ -1,5 +1,13 @@
 # Sirver Application Changelog
 
+## [Unreleased] - 2026-09-11
+### Performance & Reliability
+- Fixed the ChatPanel initial-load race so a missing scroll ref cannot leave a conversation permanently hidden behind the loading overlay; added a bounded safety timeout.
+- Re-enabled real message windowing with overscan and scroll-anchor compensation for long histories.
+- Split authenticated workspace components and the update service version constant out of the initial browser bundle; optional display fonts now load only when selected.
+- Prevented unauthenticated pages from opening the persistent chat WebSocket and removed duplicate delayed message lookups from realtime handling.
+- Added bounded WebSocket send queues, write deadlines, PocketBase request timeouts, and non-blocking broadcasts to protect the chat service from slow clients.
+
 ## [0.4.5] - 2026-09-11
 ### Performance: Deep Performance Audit & Main-Thread Unblocking
 - **Eliminated Synchronous LocalStorage in Critical Render Loops (`src/pocketbase.ts`, `src/components/ChatPanel.tsx`, `src/App.tsx`)**:

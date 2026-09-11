@@ -21,19 +21,23 @@ import {
 import { processAndOptimizeUserAvatar } from './services/avatarProcessor';
 import { backStackManager, useBackHandler } from './services/backStackManager';
 
-// Components
-import AuthScreen from './components/AuthScreen';
-import ChannelList from './components/ChannelList';
-import ChatPanel, { ActiveUploadState } from './components/ChatPanel';
-import VoicePanel from './components/VoicePanel';
-import UserProfileModal, { AnchorRect } from './components/UserProfileModal';
+// Components. Keep the authenticated workspace out of the initial auth
+// bundle; it contains the chat renderer, media stack, and attachment code.
+const AuthScreen = React.lazy(() => import('./components/AuthScreen'));
+const ChannelList = React.lazy(() => import('./components/ChannelList'));
+const ChatPanel = React.lazy(() => import('./components/ChatPanel'));
+const VoicePanel = React.lazy(() => import('./components/VoicePanel'));
+const UserProfileModal = React.lazy(() => import('./components/UserProfileModal'));
 import NotificationToast, { ToastNotice } from './components/NotificationToast';
 import NotificationsPopover from './components/NotificationsPopover';
 import TitleBar from './components/TitleBar';
-import { CURRENT_APP_VERSION } from './services/updateService';
-import ResetPasswordScreen from './components/ResetPasswordScreen';
+import { CURRENT_APP_VERSION } from './config/version';
+const ResetPasswordScreen = React.lazy(() => import('./components/ResetPasswordScreen'));
 import { setupWindowCloseRequestedListener, isTauriEnvironment, isMobilePlatform } from './lib/tauriDesktopService';
-import { GlobalMusicPlayer } from './components/MusicPlayer';
+const GlobalMusicPlayer = React.lazy(async () => {
+  const module = await import('./components/MusicPlayer');
+  return { default: module.GlobalMusicPlayer };
+});
 
 // Code-Split Lazy Loaded Components
 const SettingsModal = React.lazy(() => import('./components/SettingsModal'));
@@ -41,7 +45,10 @@ const ServerSettingsModal = React.lazy(() => import('./components/ServerSettings
 const DiscoveryCenter = React.lazy(() => import('./components/DiscoveryCenter'));
 const CreateServerModal = React.lazy(() => import('./components/CreateServerModal'));
 const NewDmModal = React.lazy(() => import('./components/NewDmModal'));
-import { FloatingCallWindow } from './components/FloatingCallWindow';
+const FloatingCallWindow = React.lazy(async () => {
+  const module = await import('./components/FloatingCallWindow');
+  return { default: module.FloatingCallWindow };
+});
 const LeaveServerModal = React.lazy(() => import('./components/LeaveServerModal'));
 import wsService from './services/websocket';
 import callSignalingService from './services/callSignaling';
@@ -52,6 +59,8 @@ import { areMessagesEqual, isSingleMessageEqual, mergeMessageListPreservingRefer
 import useRealtimeMedia from './context/MediaContext';
 import { realtimeMediaProvider } from './media/RealtimeMediaProvider';
 import voicePresenceStore from './services/voicePresenceStore';
+import type { ActiveUploadState } from './components/ChatPanel';
+import type { AnchorRect } from './components/UserProfileModal';
 
 const EMPTY_ACTIVE_CALLS: Call[] = [];
 
@@ -834,6 +843,13 @@ export default function App() {
   // 1b. Sync current user to Call Signaling Service
   useEffect(() => {
     callSignalingService.setCurrentUser(currentUser);
+    // Do not open a persistent chat socket for the auth screen or guests.
+    // The connection starts only after a valid session is present.
+    if (currentUser?.id) {
+      wsService.connect();
+    } else {
+      wsService.disconnect();
+    }
   }, [currentUser]);
 
   // 1c. User presence heartbeat to signal real-time connectivity (90s interval to prevent DB write lock thrashing)
@@ -3660,6 +3676,7 @@ export default function App() {
 
   const handleLogout = () => {
     realtimeMediaProvider.disconnect().catch(() => {});
+    wsService.disconnect();
     offlineCacheService.clearUserCache();
     pbService.logout();
     setCurrentUser(null);
@@ -3964,24 +3981,26 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="w-full h-full"
             >
-              <ResetPasswordScreen
-                token={resetToken}
-                onComplete={() => {
-                  setResetToken(null);
-                  if (typeof window !== 'undefined' && window.history?.replaceState) {
-                    window.history.replaceState({}, document.title, window.location.pathname);
-                  }
-                }}
-                onCancel={() => {
-                  setResetToken(null);
-                  if (typeof window !== 'undefined' && window.history?.replaceState) {
-                    window.history.replaceState({}, document.title, window.location.pathname);
-                  }
-                }}
-                lang={lang}
-                t={t}
-                toggleLang={() => handleSetLangAndPersist(lang === 'en' ? 'ar' : 'en')}
-              />
+              <Suspense fallback={null}>
+                <ResetPasswordScreen
+                  token={resetToken}
+                  onComplete={() => {
+                    setResetToken(null);
+                    if (typeof window !== 'undefined' && window.history?.replaceState) {
+                      window.history.replaceState({}, document.title, window.location.pathname);
+                    }
+                  }}
+                  onCancel={() => {
+                    setResetToken(null);
+                    if (typeof window !== 'undefined' && window.history?.replaceState) {
+                      window.history.replaceState({}, document.title, window.location.pathname);
+                    }
+                  }}
+                  lang={lang}
+                  t={t}
+                  toggleLang={() => handleSetLangAndPersist(lang === 'en' ? 'ar' : 'en')}
+                />
+              </Suspense>
             </motion.div>
           ) : !currentUser ? (
             <motion.div
@@ -3991,60 +4010,62 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="w-full h-full"
             >
-              <AuthScreen
-                onAuthSuccess={(user) => {
-                  setCurrentUser(user);
-                  let userSet = user.settings;
-                  if (typeof userSet === 'string') {
-                    try { userSet = JSON.parse(userSet); } catch (e) {}
-                  }
-                  const cachedSettings = getCachedUserSettings();
-                  const merged = mergeWithDefaults({
-                    ...cachedSettings,
-                    ...(userSet || {}),
-                    appearance: {
-                      ...cachedSettings.appearance,
-                      ...(userSet?.appearance || {}),
-                    },
-                    languageRegion: {
-                      ...cachedSettings.languageRegion,
-                      ...(userSet?.languageRegion || {}),
-                    },
-                  });
-                  setUserSettings(merged);
-                  saveCachedUserSettings(merged);
-                  applySettingsToDocument(merged);
-
-                  const settingsLang = merged.languageRegion?.appLanguage;
-                  const rawPref = (user as any)?.preferred_language || (user as any)?.preferredLanguage || user?.language;
-                  let targetLang: 'en' | 'ar' | null = null;
-                  if (settingsLang === 'en' || settingsLang === 'ar') {
-                    targetLang = settingsLang;
-                  } else if (rawPref) {
-                    const lower = String(rawPref).toLowerCase().trim();
-                    if (lower.startsWith('ar') || lower.includes('arabic') || lower.includes('العربية')) targetLang = 'ar';
-                    else if (lower.startsWith('en') || lower.includes('english')) targetLang = 'en';
-                  }
-                  if (targetLang) {
-                    setLang(targetLang);
-                    localStorage.setItem('app_lang', targetLang);
-                  }
-
-                  processAndOptimizeUserAvatar(user).then((optimized) => {
-                    if (optimized) {
-                      setCurrentUser(optimized);
+              <Suspense fallback={null}>
+                <AuthScreen
+                  onAuthSuccess={(user) => {
+                    setCurrentUser(user);
+                    let userSet = user.settings;
+                    if (typeof userSet === 'string') {
+                      try { userSet = JSON.parse(userSet); } catch (e) {}
                     }
-                  }).catch(() => {});
-                }}
-                lang={lang}
-                t={t}
-                toggleLang={() => handleSetLangAndPersist(lang === 'en' ? 'ar' : 'en')}
-                serverUrl={serverUrl}
-                setServerUrl={(url) => {
-                  setServerUrl(url);
-                  pbService.setServerUrl(url);
-                }}
-              />
+                    const cachedSettings = getCachedUserSettings();
+                    const merged = mergeWithDefaults({
+                      ...cachedSettings,
+                      ...(userSet || {}),
+                      appearance: {
+                        ...cachedSettings.appearance,
+                        ...(userSet?.appearance || {}),
+                      },
+                      languageRegion: {
+                        ...cachedSettings.languageRegion,
+                        ...(userSet?.languageRegion || {}),
+                      },
+                    });
+                    setUserSettings(merged);
+                    saveCachedUserSettings(merged);
+                    applySettingsToDocument(merged);
+
+                    const settingsLang = merged.languageRegion?.appLanguage;
+                    const rawPref = (user as any)?.preferred_language || (user as any)?.preferredLanguage || user?.language;
+                    let targetLang: 'en' | 'ar' | null = null;
+                    if (settingsLang === 'en' || settingsLang === 'ar') {
+                      targetLang = settingsLang;
+                    } else if (rawPref) {
+                      const lower = String(rawPref).toLowerCase().trim();
+                      if (lower.startsWith('ar') || lower.includes('arabic') || lower.includes('العربية')) targetLang = 'ar';
+                      else if (lower.startsWith('en') || lower.includes('english')) targetLang = 'en';
+                    }
+                    if (targetLang) {
+                      setLang(targetLang);
+                      localStorage.setItem('app_lang', targetLang);
+                    }
+
+                    processAndOptimizeUserAvatar(user).then((optimized) => {
+                      if (optimized) {
+                        setCurrentUser(optimized);
+                      }
+                    }).catch(() => {});
+                  }}
+                  lang={lang}
+                  t={t}
+                  toggleLang={() => handleSetLangAndPersist(lang === 'en' ? 'ar' : 'en')}
+                  serverUrl={serverUrl}
+                  setServerUrl={(url) => {
+                    setServerUrl(url);
+                    pbService.setServerUrl(url);
+                  }}
+                />
+              </Suspense>
             </motion.div>
           ) : (
             <motion.div
@@ -4057,7 +4078,8 @@ export default function App() {
             {/* Desktop Static Sidebar */}
             {!isMobile && (
               <div className="hidden md:flex md:relative md:inset-auto md:z-auto w-80 h-full shrink-0">
-                <ChannelList
+                <Suspense fallback={null}>
+                  <ChannelList
                   servers={servers}
                   activeServer={activeServer}
                   onSelectServer={handleSelectServerFromSidebar}
@@ -4104,8 +4126,9 @@ export default function App() {
                   onLeaveServer={activeServer ? handleLeaveServer : undefined}
                   onUpdateUser={handleUpdateUserFromSidebar}
                   onOpenServerSettings={handleOpenServerSettingsFromSidebar}
-                  onCloseDm={handleCloseDm}
-                />
+                    onCloseDm={handleCloseDm}
+                  />
+                </Suspense>
               </div>
             )}
 
@@ -4168,7 +4191,8 @@ export default function App() {
                     data-mobile-drawer="channels"
                     className={`fixed inset-y-0 ${lang === 'ar' ? 'right-0 border-l' : 'left-0 border-r'} border-[var(--theme-border)] z-[70] w-[78vw] max-w-[320px] sm:w-[50vw] sm:max-w-[340px] md:w-80 shrink-0 md:hidden bg-[var(--theme-bg-secondary)] text-[var(--theme-text-primary)] flex flex-col overflow-hidden shadow-2xl mobile-drawer-panel`}
                   >
-                    <ChannelList
+                    <Suspense fallback={null}>
+                      <ChannelList
                       servers={servers}
                       activeServer={activeServer}
                       onSelectServer={handleSelectServerFromSidebar}
@@ -4215,8 +4239,9 @@ export default function App() {
                       onLeaveServer={activeServer ? handleLeaveServer : undefined}
                       onUpdateUser={handleUpdateUserFromSidebar}
                       onOpenServerSettings={handleOpenServerSettingsFromSidebar}
-                      onCloseDm={handleCloseDm}
-                    />
+                        onCloseDm={handleCloseDm}
+                      />
+                    </Suspense>
                   </motion.div>
                 </>
               )}
@@ -4294,21 +4319,23 @@ export default function App() {
                   />
                 </Suspense>
               ) : (activeChannel && activeChannel.type === 'voice') ? (
-                <VoicePanel
-                  channel={activeChannel}
-                  currentUser={currentUser}
-                  isMuted={isMuted}
-                  isDeafened={isDeafened}
-                  onToggleMute={handleToggleMuteCallback}
-                  onToggleDeafen={handleToggleDeafenCallback}
-                  onLeave={handleLeaveVoice}
-                  t={t}
-                  lang={lang}
-                  theme={effectiveTheme}
-                  onSelectUser={handleSelectUser}
-                  onToggleSidebar={handleToggleSidebar}
-                  initialMode={activeCallMode}
-                />
+                <Suspense fallback={null}>
+                  <VoicePanel
+                    channel={activeChannel}
+                    currentUser={currentUser}
+                    isMuted={isMuted}
+                    isDeafened={isDeafened}
+                    onToggleMute={handleToggleMuteCallback}
+                    onToggleDeafen={handleToggleDeafenCallback}
+                    onLeave={handleLeaveVoice}
+                    t={t}
+                    lang={lang}
+                    theme={effectiveTheme}
+                    onSelectUser={handleSelectUser}
+                    onToggleSidebar={handleToggleSidebar}
+                    initialMode={activeCallMode}
+                  />
+                </Suspense>
               ) : (activeChannel || activeServerChannel || activeDmChannel) ? (
                 <div className="flex-1 flex min-w-0 w-full h-full relative overflow-hidden">
                   {(() => {
@@ -4333,51 +4360,53 @@ export default function App() {
                         : null);
 
                     return (
-                      <ChatPanel
-                        key={`chat-panel-${currentChatChannel.id}`}
-                        isActive={true}
-                        isInitialLoading={Boolean(isInitialLoadingChannel && (!cachedEntry || !Array.isArray(cachedEntry.items)))}
-                        channel={currentChatChannel}
-                        messages={messages}
-                        currentUser={currentUser}
-                        onSendMessage={handleSendMessage}
-                        onDeleteMessage={handleDeleteMessage}
-                        onEditMessage={handleEditMessage}
-                        onToggleReaction={handleToggleReaction}
-                        onDeleteChannel={handleDeleteChannel}
-                        onDeleteServer={!isDm && targetServer ? () => handleDeleteServer(targetServer.id) : undefined}
-                        t={t}
-                        lang={lang}
-                        theme={effectiveTheme}
-                        onSelectUser={handleSelectUser}
-                        server={targetServer}
-                        onUpdateChannel={handleUpdateChannelInChat}
-                        onUpdateServer={handleUpdateServerInChat}
-                        isSidebarOpen={isSidebarOpen}
-                        onToggleSidebar={handleToggleSidebar}
-                        onStartCall={handleStartCall}
-                        hasMoreMessages={hasMoreMessages}
-                        isLoadingMore={isLoadingMore}
-                        onLoadMoreMessages={handleLoadMoreMessages}
-                        onPlayGlobalTrack={handlePlayGlobalTrack}
-                        targetMessageId={targetMessageId}
-                        onClearTargetMessage={handleClearTargetMessage}
-                        notificationsList={notificationsList}
-                        onSelectNotification={handleSelectNotification}
-                        onMarkAllAsRead={handleMarkAllAsRead}
-                        onClearNotifications={handleClearNotifications}
-                        onAcceptFriendRequest={handleAcceptFriendRequestNotif}
-                        onDeclineFriendRequest={handleDeclineFriendRequestNotif}
-                        activeUpload={activeUpload}
-                        onSkipUploadFile={handleSkipUploadFile}
-                        onCancelUploadMessage={handleCancelUploadMessage}
-                        unreadCountOnOpen={activeUnreadCountOnOpen && activeUnreadCountOnOpen.channelId === currentChatChannel.id ? activeUnreadCountOnOpen.count : 0}
-                        serverChannels={channels}
-                        onNavigateToMessageLink={handleNavigateToMessageLink}
-                        activeVoiceChannel={activeVoiceChannel}
-                        onCloseDm={isDm ? () => handleCloseDm(currentChatChannel) : undefined}
-                        onExpandVoice={handleExpandVoice}
-                      />
+                      <Suspense fallback={null}>
+                        <ChatPanel
+                          key={`chat-panel-${currentChatChannel.id}`}
+                          isActive={true}
+                          isInitialLoading={Boolean(isInitialLoadingChannel && (!cachedEntry || !Array.isArray(cachedEntry.items)))}
+                          channel={currentChatChannel}
+                          messages={messages}
+                          currentUser={currentUser}
+                          onSendMessage={handleSendMessage}
+                          onDeleteMessage={handleDeleteMessage}
+                          onEditMessage={handleEditMessage}
+                          onToggleReaction={handleToggleReaction}
+                          onDeleteChannel={handleDeleteChannel}
+                          onDeleteServer={!isDm && targetServer ? () => handleDeleteServer(targetServer.id) : undefined}
+                          t={t}
+                          lang={lang}
+                          theme={effectiveTheme}
+                          onSelectUser={handleSelectUser}
+                          server={targetServer}
+                          onUpdateChannel={handleUpdateChannelInChat}
+                          onUpdateServer={handleUpdateServerInChat}
+                          isSidebarOpen={isSidebarOpen}
+                          onToggleSidebar={handleToggleSidebar}
+                          onStartCall={handleStartCall}
+                          hasMoreMessages={hasMoreMessages}
+                          isLoadingMore={isLoadingMore}
+                          onLoadMoreMessages={handleLoadMoreMessages}
+                          onPlayGlobalTrack={handlePlayGlobalTrack}
+                          targetMessageId={targetMessageId}
+                          onClearTargetMessage={handleClearTargetMessage}
+                          notificationsList={notificationsList}
+                          onSelectNotification={handleSelectNotification}
+                          onMarkAllAsRead={handleMarkAllAsRead}
+                          onClearNotifications={handleClearNotifications}
+                          onAcceptFriendRequest={handleAcceptFriendRequestNotif}
+                          onDeclineFriendRequest={handleDeclineFriendRequestNotif}
+                          activeUpload={activeUpload}
+                          onSkipUploadFile={handleSkipUploadFile}
+                          onCancelUploadMessage={handleCancelUploadMessage}
+                          unreadCountOnOpen={activeUnreadCountOnOpen && activeUnreadCountOnOpen.channelId === currentChatChannel.id ? activeUnreadCountOnOpen.count : 0}
+                          serverChannels={channels}
+                          onNavigateToMessageLink={handleNavigateToMessageLink}
+                          activeVoiceChannel={activeVoiceChannel}
+                          onCloseDm={isDm ? () => handleCloseDm(currentChatChannel) : undefined}
+                          onExpandVoice={handleExpandVoice}
+                        />
+                      </Suspense>
                     );
                   })()}
                 </div>
@@ -4583,30 +4612,32 @@ export default function App() {
             )}
 
             {/* Global Floating Call Window (Incoming Ringing, Outgoing Calling & Active Room Overlay) */}
-            <FloatingCallWindow
-              lang={lang}
-              t={t}
-              currentChannel={activeChannel}
-              onExpand={() => {
-                const voiceRoomId = activeVoiceChannel?.id;
-                if (voiceRoomId) {
-                  const targetChan = channels.find((c) => c.id === voiceRoomId) || allDmChannels.find((c) => c.id === voiceRoomId);
-                  if (targetChan) {
-                    handleSelectChannel(targetChan);
-                  }
-                }
-              }}
-            />
-
-            {/* Persistent Global Music Player */}
-            {activeGlobalTrack && (
-              <GlobalMusicPlayer
-                track={activeGlobalTrack}
-                onClose={() => setActiveGlobalTrack(null)}
+            <Suspense fallback={null}>
+              <FloatingCallWindow
                 lang={lang}
-                isLight={effectiveTheme === 'light'}
+                t={t}
+                currentChannel={activeChannel}
+                onExpand={() => {
+                  const voiceRoomId = activeVoiceChannel?.id;
+                  if (voiceRoomId) {
+                    const targetChan = channels.find((c) => c.id === voiceRoomId) || allDmChannels.find((c) => c.id === voiceRoomId);
+                    if (targetChan) {
+                      handleSelectChannel(targetChan);
+                    }
+                  }
+                }}
               />
-            )}
+
+              {/* Persistent Global Music Player */}
+              {activeGlobalTrack && (
+                <GlobalMusicPlayer
+                  track={activeGlobalTrack}
+                  onClose={() => setActiveGlobalTrack(null)}
+                  lang={lang}
+                  isLight={effectiveTheme === 'light'}
+                />
+              )}
+            </Suspense>
 
             {/* Double Back Exit Toast Notification */}
             <AnimatePresence>

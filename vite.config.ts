@@ -5,7 +5,7 @@ import { defineConfig, Plugin } from 'vite';
 import ENDPOINTS from './src/config/endpoints';
 
 function parseAllowedOrigins(): Set<string> {
-  const envVal = process.env.ALLOWED_ORIGINS || process.env.VITE_ALLOWED_ORIGINS || 'http://tauri.localhost,https://sirverdata.top';
+  const envVal = process.env.ALLOWED_ORIGINS || process.env.VITE_ALLOWED_ORIGINS || 'http://tauri.localhost,https://app.sirverdata.top,https://sirverdata.top';
   const list = envVal
     .split(',')
     .map((o) => o.trim())
@@ -14,6 +14,7 @@ function parseAllowedOrigins(): Set<string> {
   const allowedSet = new Set<string>(list);
   // Guarantee base production origins
   allowedSet.add('http://tauri.localhost');
+  allowedSet.add('https://app.sirverdata.top');
   allowedSet.add('https://sirverdata.top');
   allowedSet.add(ENDPOINTS.MAIN_DOMAIN);
   allowedSet.add('https://api.sirverdata.top');

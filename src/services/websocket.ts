@@ -39,10 +39,10 @@ class WebSocketService {
   private instanceId: string = Math.random().toString(36).substring(2, 10);
   private reconnectDelay: number = 3000;
   private maxReconnectDelay: number = 30000;
+  private shouldConnect = false;
 
   constructor() {
     this.initBroadcastChannel();
-    this.connect();
   }
 
   private initBroadcastChannel() {
@@ -61,6 +61,7 @@ class WebSocketService {
   }
 
   public connect() {
+    this.shouldConnect = true;
     if (typeof window === 'undefined') return;
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
@@ -108,7 +109,7 @@ class WebSocketService {
       };
 
       this.ws.onclose = () => {
-        if (!this.reconnectTimer) {
+        if (this.shouldConnect && !this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             this.connect();
@@ -122,6 +123,7 @@ class WebSocketService {
   }
 
   public disconnect() {
+    this.shouldConnect = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

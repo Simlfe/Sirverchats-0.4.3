@@ -2566,25 +2566,9 @@ class PocketBaseService {
             });
           }).catch(() => {});
 
-          if (e.action === 'create') {
-            setTimeout(() => {
-              this.pb.collection('messages').getOne(e.record.id, {
-                expand: 'sender,reply_to,attachments(message)',
-                requestKey: null
-              }).then((fullRecord) => {
-                this.messageListeners.forEach(({ channelId, callback }) => {
-                  if (channelId === '*' || fullRecord.channel === channelId) {
-                    try {
-                      callback({
-                        action: 'update',
-                        record: fullRecord
-                      });
-                    } catch (cbErr) {}
-                  }
-                });
-              }).catch(() => {});
-            }, 1200);
-          }
+          // The expanded lookup above is sufficient. A second delayed
+          // getOne for every create event doubled API traffic and caused a
+          // steady request burst in busy channels.
         }
       }).catch((err) => {
         this.messagesSubscribed = false;

@@ -52,6 +52,7 @@ When creating or editing components:
 - [x] `src/theme/adminThemeService.ts` (Full design tokens architecture, CSS custom property injection, and local storage fallback caching)
 - [x] `src/components/GlobalThemeManagerTab.tsx` (Admin-only Global App Theme manager with live theme library, 10 categorized token editors, global layout settings, and instant hot-sync)
 - [x] `src/theme/tokens.ts`
+- [x] `src/services/fontLoader.ts` & `src/theme/adminThemeService.ts` (Core UI fonts load from the initial HTML stylesheet; optional theme fonts are fetched on demand after a user selects them, reducing first-paint font waterfall while preserving theme font choices)
 - [x] `src/components/ThemeToggle.tsx`
 - [x] `src/main.tsx` (wrapped with `<ThemeProvider>`)
 - [x] `src/components/AuthScreen.tsx` (Guest mode & Auth screens fully aligned with Theme Tokens and ThemeToggle)

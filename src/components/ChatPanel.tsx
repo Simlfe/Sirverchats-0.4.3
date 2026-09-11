@@ -175,6 +175,12 @@ const getImageFormatTitle = (filename: string) => {
  */
 export const MESSAGE_GROUPING_WINDOW_MS = 5 * 60 * 1000;
 
+// Keep the chat responsive when a channel contains a long history. The
+// viewport normally needs only a few dozen rows; rendering a bounded window
+// with overscan keeps scrolls smooth without changing the message order.
+const VIRTUAL_MAX_ITEMS = 100;
+const VIRTUAL_OVERSCAN = 24;
+
 function getSenderId(msg?: Message | null): string {
   if (!msg) return "";
   return (
@@ -952,11 +958,17 @@ function ChatPanel({
   const isFetchingMoreRef = useRef<boolean>(false);
   const isPanelAnimatingRef = useRef<boolean>(false);
   const itemHeightsRef = useRef<Map<string, number>>(new Map());
-  const virtualRangeRef = useRef({ startIndex: 0, endIndex: 120 });
+  const virtualRangeRef = useRef({
+    startIndex: 0,
+    endIndex: VIRTUAL_MAX_ITEMS + VIRTUAL_OVERSCAN - 1,
+  });
 
   useEffect(() => {
     itemHeightsRef.current.clear();
-    virtualRangeRef.current = { startIndex: 0, endIndex: 120 };
+    virtualRangeRef.current = {
+      startIndex: 0,
+      endIndex: VIRTUAL_MAX_ITEMS + VIRTUAL_OVERSCAN - 1,
+    };
   }, [channel.id]);
 
   const handleLoadMore = React.useCallback(async () => {
@@ -1021,6 +1033,9 @@ function ChatPanel({
   const preloadMediaForRangeRef = useRef<(startIdx: number, endIdx: number) => void>(() => {});
 
   const scrollRafRef = useRef<number | null>(null);
+  const updateVirtualRangeRef = useRef<
+    (scrollTop: number, viewportHeight: number, force?: boolean) => void
+  >(() => {});
 
   const handleScrollFeed = (e?: React.UIEvent<HTMLDivElement>) => {
     const scrollEl = scrollRef.current;
@@ -1071,6 +1086,11 @@ function ChatPanel({
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       if (!scrollRef.current) return;
+
+      // Recalculate the bounded message window from the live scroll position.
+      // This is deliberately done inside the existing scroll RAF so the
+      // handler never causes one React update per native scroll event.
+      updateVirtualRangeRef.current(scrollTop, clientHeight);
 
       if (!isManualScrollingRef.current) {
         const shouldShow = !isAtBottom && sortedMessages.length > 5;
@@ -2819,20 +2839,124 @@ function ChatPanel({
     }
   }, [sortedMessages, calculateAccurateMessageHeight, unreadSeparatorMsgId]);
 
+  // Build a lightweight prefix-sum table so a scroll offset can be mapped to
+  // a message index in O(log n). We use cached/estimated row heights here;
+  // the existing height pass keeps those estimates warm as messages arrive.
+  const estimatedMessageHeights = React.useMemo(
+    () =>
+      sortedMessages.map((_, index) => getEstimatedMessageHeight(index)),
+    [sortedMessages, getEstimatedMessageHeight],
+  );
+
+  const cumulativeMessageHeights = React.useMemo(() => {
+    const prefix = new Array<number>(estimatedMessageHeights.length + 1);
+    prefix[0] = 0;
+    for (let i = 0; i < estimatedMessageHeights.length; i++) {
+      prefix[i + 1] = prefix[i] + estimatedMessageHeights[i];
+    }
+    return prefix;
+  }, [estimatedMessageHeights]);
+
+  const [virtualRangeVersion, setVirtualRangeVersion] = useState(0);
+  const previousTopSpacerHeightRef = useRef(0);
+
+  // The callback is stored in a ref because the native scroll handler is
+  // declared earlier in this component. It always points at the latest
+  // prefix table after each render.
+  updateVirtualRangeRef.current = (
+    scrollTop: number,
+    viewportHeight: number,
+    force = false,
+  ) => {
+    const count = sortedMessages.length;
+    if (count === 0) return;
+
+    let nextStart = 0;
+    let nextEnd = count - 1;
+
+    if (count > VIRTUAL_MAX_ITEMS) {
+      const maxOffset = cumulativeMessageHeights[count];
+      const findIndexAtOffset = (offset: number) => {
+        const target = Math.max(0, Math.min(offset, Math.max(0, maxOffset - 1)));
+        let low = 0;
+        let high = count - 1;
+        while (low < high) {
+          const mid = Math.floor((low + high + 1) / 2);
+          if (cumulativeMessageHeights[mid] <= target) low = mid;
+          else high = mid - 1;
+        }
+        return low;
+      };
+
+      const firstVisible = findIndexAtOffset(scrollTop);
+      const lastVisible = findIndexAtOffset(scrollTop + Math.max(1, viewportHeight));
+      nextStart = Math.max(0, firstVisible - VIRTUAL_OVERSCAN);
+      nextEnd = Math.min(count - 1, lastVisible + VIRTUAL_OVERSCAN);
+
+      // Keep enough rows mounted to avoid thrashing while the user scrolls
+      // quickly through short messages.
+      const currentSize = nextEnd - nextStart + 1;
+      if (currentSize < VIRTUAL_MAX_ITEMS) {
+        const missing = VIRTUAL_MAX_ITEMS - currentSize;
+        const growAfter = Math.min(missing, count - 1 - nextEnd);
+        nextEnd += growAfter;
+        const growBefore = missing - growAfter;
+        nextStart = Math.max(0, nextStart - growBefore);
+      }
+    }
+
+    const previous = virtualRangeRef.current;
+    if (
+      force ||
+      previous.startIndex !== nextStart ||
+      previous.endIndex !== nextEnd
+    ) {
+      virtualRangeRef.current = { startIndex: nextStart, endIndex: nextEnd };
+      setVirtualRangeVersion((version) => version + 1);
+    }
+  };
+
   const { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } =
     React.useMemo(() => {
-      return {
-        startIndex: 0,
-        endIndex: Math.max(0, totalMessagesCount - 1),
-        topSpacerHeight: 0,
-        bottomSpacerHeight: 0,
-      };
-    }, [totalMessagesCount]);
+      if (totalMessagesCount === 0) {
+        return {
+          startIndex: 0,
+          endIndex: -1,
+          topSpacerHeight: 0,
+          bottomSpacerHeight: 0,
+        };
+      }
 
-  const visibleSlice = React.useMemo(() => {
-    if (totalMessagesCount === 0) return [];
-    return sortedMessages;
-  }, [sortedMessages, totalMessagesCount]);
+      const start = Math.max(
+        0,
+        Math.min(virtualRangeRef.current.startIndex, totalMessagesCount - 1),
+      );
+      const end = Math.max(
+        start,
+        Math.min(virtualRangeRef.current.endIndex, totalMessagesCount - 1),
+      );
+      const totalHeight = cumulativeMessageHeights[totalMessagesCount] || 0;
+
+      return {
+        startIndex: start,
+        endIndex: end,
+        topSpacerHeight: cumulativeMessageHeights[start] || 0,
+        bottomSpacerHeight:
+          Math.max(0, totalHeight - (cumulativeMessageHeights[end + 1] || 0)),
+      };
+    }, [
+      totalMessagesCount,
+      cumulativeMessageHeights,
+      virtualRangeVersion,
+    ]);
+
+  const visibleSlice = React.useMemo(
+    () =>
+      totalMessagesCount === 0
+        ? []
+        : sortedMessages.slice(startIndex, endIndex + 1),
+    [sortedMessages, totalMessagesCount, startIndex, endIndex],
+  );
 
   useLayoutEffect(() => {
     if (!scrollRef.current) return;
@@ -2871,6 +2995,43 @@ function ChatPanel({
       lastScrollTopRef.current = scrollEl.scrollTop;
     }
   }, [sortedMessages, channel.id]);
+
+  // The initial scroll manager above may change scrollTop after the first
+  // paint. Re-evaluate the virtual window from that final position so a
+  // channel opened at the bottom renders its newest messages immediately.
+  useLayoutEffect(() => {
+    if (!isActive || !isInitialLoadReady || !scrollRef.current) return;
+    updateVirtualRangeRef.current(
+      scrollRef.current.scrollTop,
+      scrollRef.current.clientHeight,
+      true,
+    );
+  }, [channel.id, isActive, isInitialLoadReady, totalMessagesCount]);
+
+  // Changing the rendered window changes the height of the top spacer. Keep
+  // the user's viewport anchored to the same message while that spacer moves.
+  useLayoutEffect(() => {
+    const scrollEl = scrollRef.current;
+    const previousHeight = previousTopSpacerHeightRef.current;
+    if (
+      scrollEl &&
+      previousHeight > 0 &&
+      previousHeight !== topSpacerHeight &&
+      !isAtBottomRef.current &&
+      !isManualScrollingRef.current
+    ) {
+      scrollEl.scrollTop = Math.max(
+        0,
+        scrollEl.scrollTop + topSpacerHeight - previousHeight,
+      );
+      lastScrollTopRef.current = scrollEl.scrollTop;
+    }
+    previousTopSpacerHeightRef.current = topSpacerHeight;
+  }, [topSpacerHeight]);
+
+  useEffect(() => {
+    previousTopSpacerHeightRef.current = 0;
+  }, [channel.id]);
 
   // Calculate temporary "New Messages" separator ID when channel opens with unread messages
   useEffect(() => {
@@ -3812,6 +3973,11 @@ function ChatPanel({
 
           if (scrollRef.current) {
             executeScroll("initial");
+          } else {
+            // A missing ref must never leave the entire feed permanently
+            // hidden. The next render/resize can still restore the scroll
+            // position, but the message content is usable immediately.
+            setIsInitialLoadReady(true);
           }
         } else {
           if (isChannelChanged) {
@@ -3837,6 +4003,8 @@ function ChatPanel({
               editingText: "",
               channelSearchQuery: "",
             });
+          } else {
+            setIsInitialLoadReady(true);
           }
         }
 
@@ -3868,6 +4036,21 @@ function ChatPanel({
       lastMessageIdRef.current = lastMsgId;
     }
   }, [channel.id, isActive, isInitialLoading, sortedMessages, currentUser.id]);
+
+  // Safety valve for transient layout/ref failures or a stalled backend. A
+  // loading overlay may be useful briefly, but it must not be able to lock a
+  // conversation out forever.
+  useEffect(() => {
+    if (!isActive || isInitialLoadReady) return;
+    const timeoutId = window.setTimeout(() => {
+      setIsInitialLoadReady(true);
+      isInitialScrollPendingRef.current = false;
+      if (initialChannelLoadLockRef.current.chanId === channel.id) {
+        initialChannelLoadLockRef.current.active = false;
+      }
+    }, 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [channel.id, isActive, isInitialLoadReady]);
 
   // Chat cooldown clock decrement
   useEffect(() => {
