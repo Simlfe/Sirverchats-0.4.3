@@ -1,6 +1,7 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Theme.sirverdata" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <!-- Keep the night resource on the AppCompat stack used by the app. -->
+    <style name="Theme.sirverdata" parent="Theme.AppCompat.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
     </style>
 </resources>
