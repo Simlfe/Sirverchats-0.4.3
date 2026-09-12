@@ -50,10 +50,19 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           command: pages project create sirverchats --production-branch=main
 
+      - name: Ensure production custom domain is attached
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages domain add app.sirverdata.top --project-name=sirverchats
+
       - name: Publish to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy native/build/web --project-name=sirverchats
+          command: pages deploy native/build/web --project-name=sirverchats --branch=main

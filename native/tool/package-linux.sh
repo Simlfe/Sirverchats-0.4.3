@@ -53,7 +53,12 @@ if [[ -n "${APPIMAGETOOL:-}" && -x "${APPIMAGETOOL}" ]]; then
   APP_DIR="${OUT_DIR}/SirverChats.AppDir"
   mkdir -p "${APP_DIR}/usr/bin" "${APP_DIR}/usr/share/icons/hicolor/256x256/apps"
   cp -a "${BUNDLE_DIR}/." "${APP_DIR}/usr/bin/"
-  cp "${ROOT_DIR}/web/icons/Icon-512.png" "${APP_DIR}/usr/share/icons/hicolor/256x256/apps/sirverdata-desktop.png" 2>/dev/null || true
+  # AppImage tooling resolves the desktop file's Icon entry from the AppDir
+  # root. Keep the freedesktop icon location too for installed packages.
+  if [[ -f "${ROOT_DIR}/web/icons/Icon-512.png" ]]; then
+    cp "${ROOT_DIR}/web/icons/Icon-512.png" "${APP_DIR}/sirverdata-desktop.png"
+    cp "${ROOT_DIR}/web/icons/Icon-512.png" "${APP_DIR}/usr/share/icons/hicolor/256x256/apps/sirverdata-desktop.png"
+  fi
   cp "${DESKTOP_FILE}" "${APP_DIR}/sirverdata-desktop.desktop"
   cat > "${APP_DIR}/AppRun" <<'APPRUN'
 #!/usr/bin/env bash
