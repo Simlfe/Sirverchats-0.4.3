@@ -511,9 +511,12 @@ function sendUpstreamSubscriptions(client) {
 function normalizeUpstreamEvent(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const eventType = raw.type || raw.action || '';
-  const record = raw.record || raw.message;
+  const record = raw.record || raw.message ||
+    (eventType === 'new_message' && raw.data && typeof raw.data === 'object'
+      ? raw.data
+      : null);
   if (record && (eventType.includes('message') || record.content !== undefined)) {
-    const conversation = conversationFromEvent(raw);
+    const conversation = conversationFromEvent({ ...raw, record });
     if (!conversation) return null;
     return {
       type: eventType.includes('delete') ? 'message.deleted' : eventType.includes('update') ? 'message.updated' : 'message.created',
@@ -528,7 +531,10 @@ function attachUpstream(client) {
   if (!config.chatUpstreamWs) return;
   let upstream;
   try {
-    upstream = new WebSocket(config.chatUpstreamWs, {
+    const upstreamUrl = new URL(config.chatUpstreamWs);
+    upstreamUrl.searchParams.set('token', client.token);
+    if (client.user?.id) upstreamUrl.searchParams.set('user_id', client.user.id);
+    upstream = new WebSocket(upstreamUrl, {
       headers: { Authorization: `Bearer ${client.token}` },
     });
   } catch {
@@ -839,8 +845,44 @@ registerSocketServer(new WebSocketServer({
   path: '/api/v2/ws',
   verifyClient: verifySocketOrigin,
 }));
+
+function registerLegacySocketProxy(wss) {
+  wss.on('connection', (socket, request) => {
+    const requestUrl = new URL(request.url || '/', 'http://localhost');
+    const token = requestUrl.searchParams.get('token') || '';
+    const userId = requestUrl.searchParams.get('user_id') || '';
+    let upstream;
+    try {
+      const upstreamUrl = new URL(config.chatUpstreamWs || 'ws://127.0.0.1:8090/ws');
+      upstreamUrl.searchParams.set('token', token);
+      if (userId) upstreamUrl.searchParams.set('user_id', userId);
+      upstream = new WebSocket(upstreamUrl);
+    } catch {
+      socket.close(1011, 'Legacy chat bridge is unavailable');
+      return;
+    }
+    const forwardToUpstream = (data) => {
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+    };
+    const forwardToClient = (data) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(data);
+    };
+    socket.on('message', forwardToUpstream);
+    upstream.on('message', forwardToClient);
+    const closeBoth = () => {
+      try { upstream.close(); } catch {}
+      try { socket.close(); } catch {}
+    };
+    socket.on('close', closeBoth);
+    socket.on('error', closeBoth);
+    upstream.on('close', () => {
+      if (socket.readyState === WebSocket.OPEN) socket.close(1011, 'Legacy chat bridge closed');
+    });
+    upstream.on('error', closeBoth);
+  });
+}
 // Keep the legacy path available while existing 0.4.x clients are migrated.
-registerSocketServer(new WebSocketServer({
+registerLegacySocketProxy(new WebSocketServer({
   server,
   path: '/ws',
   verifyClient: verifySocketOrigin,
