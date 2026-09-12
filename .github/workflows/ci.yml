@@ -29,6 +29,14 @@ jobs:
       - name: Cursor and pagination tests
         run: npm run test:unit
 
+      - name: API gateway tests
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: backend/api-v2
+
+      - name: Run API gateway tests
+        run: npm test
+        working-directory: backend/api-v2
+
       - name: Production web build
         run: npm run build
 

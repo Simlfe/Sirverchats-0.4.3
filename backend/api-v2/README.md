@@ -9,7 +9,10 @@ admin or LiveKit signing credentials.
 
 Copy `.env.example` to the service environment and set:
 
-- `POCKETBASE_URL`: internal/public PocketBase base URL.
+- `POCKETBASE_URL`: PocketBase base URL. Use `http://127.0.0.1:5000` when the
+  gateway runs on the same VPS; using `https://api.sirverdata.top` adds an
+  avoidable tunnel round-trip and couples gateway requests to the public
+  connector.
 - `LIVEKIT_TOKEN_SERVICE_URL`: private token endpoint on the Istanbul VPS.
 - `LIVEKIT_INTERNAL_TOKEN`: shared secret expected by that private endpoint.
 - `CHAT_UPSTREAM_WS`: existing chat WebSocket URL while realtime migration is staged.
@@ -60,3 +63,13 @@ Deploy the gateway beside a backed-up PocketBase staging copy first. Set the
 Istanbul token URL and internal secret only in the service environment. Do not
 put either value in Flutter `--dart-define` flags, GitHub artifacts, or browser
 configuration.
+
+## Bootstrap and direct messages
+
+`GET /api/v2/bootstrap?serverId=<optional-last-active-server>` returns the
+authenticated user, joined servers, normalized DM summaries (including each
+counterpart profile), the selected server id, and that server's channels in one
+request. `GET /api/v2/dms` returns the same normalized DM summaries. New
+conversations use `POST /api/v2/dms` with `{ "recipientId": "..." }`; repeated
+requests for the same user are coalesced and never return a fabricated local
+conversation id.

@@ -5,7 +5,12 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 const config = {
   port: Number.parseInt(process.env.PORT || '8080', 10),
-  pbBaseUrl: (process.env.POCKETBASE_URL || 'https://api.sirverdata.top').replace(/\/+$/, ''),
+  // The gateway and PocketBase run on the same VPS. Calling the public
+  // Cloudflare hostname from the gateway adds a second tunnel round-trip and
+  // makes a tunnel outage look like a slow database. Production should use
+  // the loopback address; the environment variable remains configurable for
+  // staging.
+  pbBaseUrl: (process.env.POCKETBASE_URL || 'http://127.0.0.1:5000').replace(/\/+$/, ''),
   livekitTokenUrl: process.env.LIVEKIT_TOKEN_SERVICE_URL || '',
   livekitInternalToken: process.env.LIVEKIT_INTERNAL_TOKEN || '',
   chatUpstreamWs: process.env.CHAT_UPSTREAM_WS || '',
@@ -19,17 +24,31 @@ const config = {
 };
 
 const tokenCache = new Map();
+const pendingTokenValidations = new Map();
+const pendingDmCreations = new Map();
 const accessCache = new Map();
 const clients = new Set();
 const recentMessageEvents = new Map();
 const recentCallEvents = new Map();
 
 class HttpError extends Error {
-  constructor(status, message, details) {
+  constructor(status, message, details, code) {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code || (status >= 500 ? 'upstream_unavailable' : status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status === 404 ? 'not_found' : 'gateway_error');
   }
+}
+
+function isSchemaCompatibilityError(error) {
+  if (!(error instanceof HttpError)) return false;
+  const message = [error.message, error.details?.message, error.details?.data?.message]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (/unknown field|no such field|field .* does not exist|missing field/.test(message)) return true;
+  return /missing collection|no such collection|collection .* not found/.test(message) ||
+    (error.status === 404 && Boolean(error.details?.collection));
 }
 
 function originForRequest(origin) {
@@ -141,7 +160,11 @@ async function queryCollection(collection, params, token) {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!result.response.ok) {
-    throw new HttpError(result.response.status, result.data?.message || `Unable to read ${collection}.`, result.data);
+    throw new HttpError(
+      result.response.status,
+      result.data?.message || `Unable to read ${collection}.`,
+      { collection, data: result.data },
+    );
   }
   return Array.isArray(result.data?.items) ? result.data.items : [];
 }
@@ -150,16 +173,26 @@ async function validateToken(token) {
   if (!token) throw new HttpError(401, 'Authentication is required.');
   const cached = tokenCache.get(token);
   if (cached && cached.expiresAt > Date.now()) return cached.record;
-  const result = await pbRequest('/api/collections/users/auth-refresh', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!result.response.ok || !result.data?.record?.id) {
-    throw new HttpError(401, 'Session is expired or invalid.');
-  }
-  const record = result.data.record;
-  tokenCache.set(token, { record, expiresAt: Date.now() + 30_000 });
-  return record;
+  const pending = pendingTokenValidations.get(token);
+  if (pending) return pending;
+
+  const validation = (async () => {
+    const result = await pbRequest('/api/collections/users/auth-refresh', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!result.response.ok || !result.data?.record?.id) {
+      throw new HttpError(401, 'Session is expired or invalid.');
+    }
+    const record = result.data.record;
+    tokenCache.set(token, { record, expiresAt: Date.now() + 30_000 });
+    return record;
+  })();
+  pendingTokenValidations.set(token, validation);
+  validation.finally(() => {
+    if (pendingTokenValidations.get(token) === validation) pendingTokenValidations.delete(token);
+  }).catch(() => {});
+  return validation;
 }
 
 async function requireAuth(req) {
@@ -222,7 +255,8 @@ async function findServerMembership(userId, serverId, token) {
       token,
     );
     allowed = memberships.length > 0;
-  } catch {
+  } catch (error) {
+    if (!isSchemaCompatibilityError(error)) throw error;
     const servers = await queryCollection(
       'servers',
       { filter: `id = "${escapeFilter(serverId)}" && members ~ "${escapeFilter(userId)}"`, perPage: '1' },
@@ -266,19 +300,194 @@ async function listServers(userId, token) {
   try {
     const memberships = await queryCollection('server_members', { filter: `user = "${escapeFilter(userId)}"`, perPage: '200' }, token);
     serverIds = memberships.map((membership) => membership.server).filter(Boolean);
-  } catch {
+  } catch (error) {
+    if (!isSchemaCompatibilityError(error)) throw error;
     const legacy = await queryCollection('servers', { filter: `members ~ "${escapeFilter(userId)}"`, perPage: '200' }, token);
+    legacy.forEach((server) => accessCache.set(`${userId}:${server.id}`, { value: true, expiresAt: Date.now() + 30_000 }));
     return legacy;
   }
   if (!serverIds.length) return [];
-  return queryCollection('servers', { filter: idsFilter('id', [...new Set(serverIds)]), perPage: '200', sort: 'name' }, token);
+  const uniqueIds = [...new Set(serverIds)];
+  const servers = await queryCollection('servers', { filter: idsFilter('id', uniqueIds), perPage: String(uniqueIds.length), sort: 'name' }, token);
+  // Bootstrap and the first message request can reuse this membership check.
+  uniqueIds.forEach((serverId) => accessCache.set(`${userId}:${serverId}`, { value: true, expiresAt: Date.now() + 30_000 }));
+  return servers;
+}
+
+function participantIds(record) {
+  const values = Array.isArray(record?.users)
+    ? record.users
+    : [record?.user1, record?.user2].filter(Boolean);
+  return values
+    .map((value) => (value && typeof value === 'object' ? value.id : value))
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function userFromExpandedRecord(record, id) {
+  const expanded = record?.expand || {};
+  const candidates = [];
+  for (const key of ['users', 'user1', 'user2']) {
+    const value = expanded[key];
+    if (Array.isArray(value)) candidates.push(...value);
+    else if (value) candidates.push(value);
+  }
+  return candidates.find((value) => String(value?.id || value) === String(id)) || null;
+}
+
+function toDmSummary(record, userById) {
+  const users = participantIds(record);
+  const currentId = record.__currentUserId;
+  const otherId = users.find((id) => id !== currentId) || users[0];
+  if (!otherId) return null;
+  const counterpart = userById.get(otherId) || userFromExpandedRecord(record, otherId);
+  if (!counterpart?.id) return null;
+  const { __currentUserId: _ignored, ...cleanRecord } = record;
+  return {
+    ...cleanRecord,
+    users,
+    counterpart,
+    // Keep the legacy field available to the React/Tauri UI during migration.
+    recipientUser: counterpart,
+  };
 }
 
 async function listDms(userId, token) {
-  const memberships = await queryCollection('private_chat_members', { filter: `user = "${escapeFilter(userId)}"`, perPage: '200' }, token);
+  let memberships;
+  try {
+    memberships = await queryCollection('private_chat_members', { filter: `user = "${escapeFilter(userId)}"`, perPage: '200' }, token);
+  } catch (error) {
+    // Older installations may not have the normalized membership collection.
+    // Do not hide network/upstream failures behind another slow request.
+    if (!isSchemaCompatibilityError(error)) throw error;
+    const legacy = await queryCollection('private_chat_servers', { filter: `users ~ "${escapeFilter(userId)}"`, perPage: '200' }, token);
+    memberships = legacy.map((server) => ({ chat_server: server.id }));
+  }
   const ids = [...new Set(memberships.map((membership) => membership.chat_server).filter(Boolean))];
   if (!ids.length) return [];
-  return queryCollection('private_chat_servers', { filter: idsFilter('id', ids), perPage: '200', sort: '-updated' }, token);
+  const records = await queryCollection('private_chat_servers', {
+    filter: idsFilter('id', ids),
+    perPage: String(ids.length),
+    sort: '-updated',
+    expand: 'users,user1,user2',
+  }, token);
+  const counterpartIds = [...new Set(records.flatMap((record) => participantIds(record).filter((id) => id !== userId)))];
+  const userRecords = counterpartIds.length
+    ? await queryCollection('users', { filter: idsFilter('id', counterpartIds), perPage: String(counterpartIds.length) }, token)
+    : [];
+  const userById = new Map(userRecords.map((user) => [String(user.id), user]));
+  return records
+    .map((record) => toDmSummary({ ...record, __currentUserId: userId }, userById))
+    .filter(Boolean);
+}
+
+async function listChannelsForUser(serverId, userId, token) {
+  if (!(await findServerMembership(userId, serverId, token))) {
+    throw new HttpError(403, 'You are not a member of this server.');
+  }
+  return queryCollection('channels', {
+    filter: `server = "${escapeFilter(serverId)}"`,
+    sort: 'position,created',
+    perPage: '200',
+  }, token);
+}
+
+async function bootstrap(user, token, requestedServerId) {
+  const [servers, dms] = await Promise.all([
+    listServers(user.id, token),
+    listDms(user.id, token),
+  ]);
+  const activeServerId = requestedServerId && servers.some((server) => server.id === requestedServerId)
+    ? requestedServerId
+    : servers[0]?.id || null;
+  const channels = activeServerId ? await listChannelsForUser(activeServerId, user.id, token) : [];
+  return {
+    user,
+    servers,
+    dms,
+    activeServerId,
+    channels,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+async function findExistingDm(userId, recipientId, token) {
+  const pairFilter = `(user1 = "${escapeFilter(userId)}" && user2 = "${escapeFilter(recipientId)}") || (user1 = "${escapeFilter(recipientId)}" && user2 = "${escapeFilter(userId)}")`;
+  try {
+    const result = await queryCollection('private_chat_servers', { filter: pairFilter, perPage: '1', expand: 'users,user1,user2' }, token);
+    return result[0] || null;
+  } catch (error) {
+    if (!isSchemaCompatibilityError(error)) throw error;
+    const result = await queryCollection('private_chat_servers', { filter: `users ~ "${escapeFilter(userId)}"`, perPage: '200' }, token);
+    return result.find((record) => participantIds(record).includes(recipientId)) || null;
+  }
+}
+
+async function ensureDmMembership(userId, chatServerId, token) {
+  try {
+    const existing = await queryCollection('private_chat_members', {
+      filter: `(user = "${escapeFilter(userId)}" && chat_server = "${escapeFilter(chatServerId)}")`,
+      perPage: '1',
+    }, token);
+    if (existing.length) return;
+  } catch (error) {
+    // A legacy installation may not have the normalized membership
+    // collection; its private_chat_servers.users relation remains the access
+    // source for that deployment.
+    if (isSchemaCompatibilityError(error)) return;
+    throw error;
+  }
+  const result = await pbRequest(collectionPath('private_chat_members'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ user: userId, chat_server: chatServerId }),
+  });
+  if (!result.response.ok) {
+    throw new HttpError(result.response.status, result.data?.message || 'Unable to create direct-message membership.');
+  }
+}
+
+async function createOrGetDmUncached(userId, recipientId, token) {
+  const cleanRecipientId = String(recipientId || '').trim();
+  if (!cleanRecipientId || cleanRecipientId === String(userId)) {
+    throw new HttpError(400, 'A different recipient is required.');
+  }
+  const recipient = await queryCollection('users', { filter: `id = "${escapeFilter(cleanRecipientId)}"`, perPage: '1' }, token);
+  if (!recipient[0]) throw new HttpError(404, 'Recipient not found.');
+
+  let record = await findExistingDm(userId, cleanRecipientId, token);
+  if (!record) {
+    const created = await pbRequest(collectionPath('private_chat_servers'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ users: [userId, cleanRecipientId], user1: userId, user2: cleanRecipientId, private_chat_options: {} }),
+    });
+    if (!created.response.ok || !created.data?.id) {
+      throw new HttpError(created.response.status, created.data?.message || 'Unable to create direct message.');
+    }
+    record = created.data;
+  }
+  await Promise.all([
+    ensureDmMembership(userId, record.id, token),
+    ensureDmMembership(cleanRecipientId, record.id, token),
+  ]);
+  const userById = new Map([[cleanRecipientId, recipient[0]]]);
+  const conversation = toDmSummary({ ...record, __currentUserId: userId }, userById);
+  if (!conversation) throw new HttpError(502, 'The direct message record is incomplete.');
+  return conversation;
+}
+
+async function createOrGetDm(userId, recipientId, token) {
+  const cleanRecipientId = String(recipientId || '').trim();
+  const key = [String(userId), cleanRecipientId].sort().join(':');
+  const pending = pendingDmCreations.get(key);
+  if (pending) return pending;
+  const creation = createOrGetDmUncached(userId, recipientId, token);
+  pendingDmCreations.set(key, creation);
+  creation.finally(() => {
+    if (pendingDmCreations.get(key) === creation) pendingDmCreations.delete(key);
+  }).catch(() => {});
+  return creation;
 }
 
 function pbFileUrl(collection, recordId, filename, query = '') {
@@ -315,12 +524,17 @@ function normalizeMessage(record, kind, conversationId) {
   const attachments = Array.isArray(rawAttachments)
     ? rawAttachments.map((item) => normalizeAttachment(item, kind === 'dm' ? 'private_attachments' : 'attachments')).filter(Boolean)
     : [];
+  const senderId = record.user || record.sender || record.sender_id || sender?.id || '';
   return {
     id: record.id,
     conversation_kind: kind,
     conversation_id: conversationId,
     content: record.content || '',
-    sender_id: record.user || record.sender || record.sender_id || '',
+    // Include both the v2 names and the legacy PocketBase names so the
+    // current React/Tauri renderer can consume one event/page shape.
+    sender_id: senderId,
+    sender: senderId,
+    channel: conversationId,
     sender,
     created: record.created,
     updated: record.updated,
@@ -329,7 +543,16 @@ function normalizeMessage(record, kind, conversationId) {
     edited_at: record.edited_at || null,
     deleted: Boolean(record.deleted || record.deleted_at),
     deleted_at: record.deleted_at || null,
+    has_attachment: Boolean(record.has_attachment || attachments.length > 0),
     attachments,
+    expand: {
+      ...expand,
+      sender: sender || expand.sender,
+      reply_to: expand.reply_to || null,
+      ...(kind === 'dm'
+        ? { private_attachments_via_message: attachments }
+        : { attachments_via_message: attachments }),
+    },
   };
 }
 
@@ -615,6 +838,22 @@ async function handleSocketMessage(client, raw) {
 }
 
 async function handleRequest(req, res) {
+  const timings = [];
+  const originalEnd = res.end.bind(res);
+  res.end = (...args) => {
+    if (!res.headersSent && timings.length > 0) {
+      res.setHeader('Server-Timing', timings.join(', '));
+    }
+    return originalEnd(...args);
+  };
+  const timed = async (name, operation) => {
+    const started = performance.now();
+    try {
+      return await operation();
+    } finally {
+      timings.push(`${name};dur=${Math.max(0, performance.now() - started).toFixed(1)}`);
+    }
+  };
   setCors(req, res);
   if (req.method === 'OPTIONS') {
     sendEmpty(res, 204);
@@ -676,17 +915,26 @@ async function handleRequest(req, res) {
       return;
     }
 
-    const { token, record: user } = await requireAuth(req);
+    const { token, record: user } = await timed('auth', () => requireAuth(req));
     if (path === '/api/v2/me' && req.method === 'GET') {
       sendJson(res, 200, { user });
       return;
     }
+    if (path === '/api/v2/bootstrap' && req.method === 'GET') {
+      sendJson(res, 200, await timed('bootstrap', () => bootstrap(user, token, requestUrl.searchParams.get('serverId'))));
+      return;
+    }
     if (path === '/api/v2/servers' && req.method === 'GET') {
-      sendJson(res, 200, { items: await listServers(user.id, token) });
+      sendJson(res, 200, { items: await timed('servers', () => listServers(user.id, token)) });
       return;
     }
     if (path === '/api/v2/dms' && req.method === 'GET') {
-      sendJson(res, 200, { items: await listDms(user.id, token) });
+      sendJson(res, 200, { items: await timed('dms', () => listDms(user.id, token)) });
+      return;
+    }
+    if (path === '/api/v2/dms' && req.method === 'POST') {
+      const body = await readJson(req);
+      sendJson(res, 201, { conversation: await timed('dm-create', () => createOrGetDm(user.id, body.recipientId, token)) });
       return;
     }
     if (path === '/api/v2/users' && req.method === 'GET') {
@@ -706,8 +954,7 @@ async function handleRequest(req, res) {
     const channelMatch = path.match(/^\/api\/v2\/servers\/([^/]+)\/channels$/);
     if (channelMatch && req.method === 'GET') {
       const serverId = decodeURIComponent(channelMatch[1]);
-      if (!(await findServerMembership(user.id, serverId, token))) throw new HttpError(403, 'You are not a member of this server.');
-      sendJson(res, 200, { items: await queryCollection('channels', { filter: `server = "${escapeFilter(serverId)}"`, sort: 'position', perPage: '200' }, token) });
+      sendJson(res, 200, { items: await timed('channels', () => listChannelsForUser(serverId, user.id, token)) });
       return;
     }
 
@@ -716,11 +963,11 @@ async function handleRequest(req, res) {
       const kind = messageMatch[1];
       const conversationId = decodeURIComponent(messageMatch[2]);
       if (req.method === 'GET') {
-        sendJson(res, 200, await fetchMessagePage(kind, conversationId, requestUrl.searchParams, token, user.id));
+        sendJson(res, 200, await timed('messages', () => fetchMessagePage(kind, conversationId, requestUrl.searchParams, token, user.id)));
         return;
       }
       if (req.method === 'POST') {
-        const message = await createMessage(kind, conversationId, await readJson(req), user.id, token);
+        const message = await timed('message-create', async () => createMessage(kind, conversationId, await readJson(req), user.id, token));
         const event = { type: 'message.created', conversation: { kind, id: conversationId }, message };
         publish(event, { kind, id: conversationId });
         sendJson(res, 201, { message });
@@ -806,7 +1053,11 @@ async function handleRequest(req, res) {
     const status = error instanceof HttpError ? error.status : 500;
     const message = error instanceof HttpError ? error.message : 'Internal server error.';
     if (!(error instanceof HttpError)) console.error(`[${requestId}]`, error);
-    sendJson(res, status, { error: message, requestId, ...(error instanceof HttpError && error.details ? { details: error.details } : {}) });
+    sendJson(res, status, {
+      error: message,
+      code: error instanceof HttpError ? error.code : status >= 500 ? 'internal_error' : 'gateway_error',
+      requestId,
+    });
   }
 }
 
@@ -902,6 +1153,8 @@ export {
   config,
   buildMessageFilter,
   cursorForRecord,
+  participantIds,
+  toDmSummary,
   normalizeMessage,
   normalizeUpstreamEvent,
   originForRequest,

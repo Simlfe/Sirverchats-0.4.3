@@ -1,0 +1,20 @@
+[Unit]
+Description=Cloudflare Tunnel for SirverChats
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+# The config file must reference the already-provisioned named tunnel and its
+# existing credentials file. Never commit either value to this repository.
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

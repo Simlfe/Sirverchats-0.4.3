@@ -1,0 +1,12 @@
+# Copy this to /etc/cloudflared/config.yml on the VPS and replace the
+# placeholders with the existing named tunnel ID and credentials path. The
+# tunnel is intentionally not created or rotated by this repository.
+tunnel: REPLACE_WITH_EXISTING_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_EXISTING_TUNNEL_ID.json
+
+ingress:
+  - hostname: api.sirverdata.top
+    service: http://127.0.0.1:5000
+  - hostname: chat.sirverdata.top
+    service: http://127.0.0.1:8080
+  - service: http_status:404

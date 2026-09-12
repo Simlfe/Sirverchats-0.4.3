@@ -38,6 +38,9 @@ export const ENDPOINTS = {
   /** PocketBase REST API Base URL */
   API_BASE_URL: getEnvVar('VITE_API_BASE_URL') || getEnvVar('VITE_POCKETBASE_URL') || 'https://api.sirverdata.top',
 
+  /** Versioned gateway used for latency-sensitive reads shared by web and Tauri. */
+  API_V2_BASE_URL: (getEnvVar('VITE_API_V2_BASE_URL') || 'https://chat.sirverdata.top/api/v2').replace(/\/+$/, ''),
+
   /** Chat Server (Go backend) / WebSocket Server URL */
   CHAT_SERVER_URL: getEnvVar('VITE_CHAT_SERVER_URL') || 'wss://chat.sirverdata.top/ws',
 

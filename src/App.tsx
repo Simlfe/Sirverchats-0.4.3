@@ -60,6 +60,7 @@ import useRealtimeMedia, { ensureMediaProvider, getRegisteredMediaContext } from
 import voicePresenceStore from './services/voicePresenceStore';
 import type { ActiveUploadState } from './components/ChatPanel';
 import type { AnchorRect } from './components/UserProfileModal';
+import { apiV2Client, GatewayError } from './services/apiV2Client';
 
 const EMPTY_ACTIVE_CALLS: Call[] = [];
 const loadCapacitorApp = () => import('@capacitor/app').then((module) => module.App);
@@ -124,6 +125,7 @@ function extractResetTokenFromUrl(urlStr?: string): string | null {
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [backendAvailability, setBackendAvailability] = useState(apiV2Client.getAvailability());
   const [resetToken, setResetToken] = useState<string | null>(() => extractResetTokenFromUrl());
   const [servers, setServers] = useState<Server[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -440,6 +442,7 @@ export default function App() {
 
   // Caching mechanism for instant browsing experience (SWR pattern)
   const channelsCache = useRef<Record<string, Channel[]>>({});
+  const channelCacheFreshnessRef = useRef<Record<string, number>>({});
   const messagesCache = useRef<Record<string, { items: Message[]; page: number; hasMore: boolean }>>({});
   const messageCacheFreshnessRef = useRef<Record<string, number>>({});
   // Each conversation owns its request generation so a slow response from a
@@ -449,11 +452,14 @@ export default function App() {
   const messageLoadingRef = useRef<Set<string>>(new Set());
   const stagedLoadTimerRef = useRef<any>(null);
   const messageCacheTtlMs = 15000;
+  const bootstrapInFlightRef = useRef<{ userId: string; promise: Promise<any> } | null>(null);
+  const bootstrapCacheRef = useRef<{ userId: string; data: any; timestamp: number } | null>(null);
 
   // Refs for tracking changes without triggering re-renders in effects
   const channelsRef = useRef<Channel[]>([]);
   const activeChannelRef = useRef<Channel | null>(null);
   const currentUserRef = useRef<User | null>(null);
+  const notificationsListRef = useRef<NotificationItem[]>([]);
   const langRef = useRef<string>('en');
   const activeServerRef = useRef<Server | null>(null);
   const handleSelectNotificationRef = useRef<((notif: NotificationItem) => void) | null>(null);
@@ -461,8 +467,13 @@ export default function App() {
   useEffect(() => { channelsRef.current = channels; }, [channels]);
   useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  useEffect(() => { notificationsListRef.current = notificationsList; }, [notificationsList]);
   useEffect(() => { langRef.current = lang; }, [lang]);
   useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
+
+  // The gateway owns the read-path circuit breaker. Keep its state in the
+  // shell so cached content remains usable while the home VPS is offline.
+  useEffect(() => apiV2Client.subscribe(setBackendAvailability), []);
 
   // Initialize native Android & local notification channels and setup tap listeners
   useEffect(() => {
@@ -1177,68 +1188,14 @@ export default function App() {
       }
     }
 
-    // 3. Non-blocking background sync from PocketBase
+    // 3. Share the single bootstrap request with server loading. The gateway
+    // batches counterpart profiles, so DM mode never performs one user query
+    // per conversation.
     try {
-      const userChatServers = await pbService.getUserPrivateChatServers();
-      const currentId = currentUser?.id;
-
-      // Resolve only the counterpart profiles needed for visible DMs. The
-      // previous login path fetched the entire user directory before it could
-      // render the DM list.
-      const counterpartIds = Array.from(new Set(
-        userChatServers.flatMap((cs: any) => {
-          const users = cs.users || [cs.user1, cs.user2].filter(Boolean);
-          return users.filter((uid: string) => uid && uid !== currentId);
-        }),
-      ));
-      const counterpartUsers = await Promise.all(counterpartIds.map((id) => pbService.fetchUserById(id)));
-      const usersById = new Map(counterpartUsers.filter(Boolean).map((user) => [user!.id, user!]));
-
-      const dynamicDmChannels: Channel[] = [];
-      const seenRecipientIds = new Set<string>();
-
-      for (const cs of userChatServers) {
-        const usersInServer = cs.users || [cs.user1, cs.user2].filter(Boolean);
-        const otherUserId = usersInServer.find((uid: string) => uid !== currentId) || usersInServer[0];
-        const otherUser = usersById.get(otherUserId);
-        if (otherUser && !seenRecipientIds.has(otherUser.id)) {
-          const chanId = `dm-server-${cs.id}`;
-          const isClosed =
-            closedDmIds.has(chanId) ||
-            closedDmIds.has(otherUser.id) ||
-            closedDmIds.has(`dm-user-${otherUser.id}`);
-          if (!isClosed) {
-            seenRecipientIds.add(otherUser.id);
-            dynamicDmChannels.push({
-              id: chanId,
-              name: `@${otherUser.username}`,
-              type: 'text',
-              server: 'dm',
-              description: `Direct Messages with ${otherUser.display_name || otherUser.username}`,
-              recipientUser: otherUser,
-              created: cs.created || new Date().toISOString()
-            });
-          }
-        }
-      }
-
-      // Diff check: compare with existing to avoid unnecessary React re-renders/flashes
-      const prevList = inMemoryDmCacheRef.current.get(userId) || [];
-      const hasChanged =
-        prevList.length !== dynamicDmChannels.length ||
-        dynamicDmChannels.some((newChan, idx) => {
-          const oldChan = prevList[idx];
-          return !oldChan || oldChan.id !== newChan.id || oldChan.created !== newChan.created || oldChan.recipientUser?.avatar !== newChan.recipientUser?.avatar;
-        });
-
-      if (hasChanged || prevList.length === 0) {
-        inMemoryDmCacheRef.current.set(userId, dynamicDmChannels);
-        pbService.setCachedDmChannels(userId, dynamicDmChannels);
-        setAllDmChannels(dynamicDmChannels);
-        offlineCacheService.saveDmChannels(userId, dynamicDmChannels);
-      }
+      const bootstrap = await getBootstrapForCurrentUser();
+      applyBootstrapData(bootstrap);
     } catch (err) {
-      console.warn('Failed to load DM channels:', err);
+      if (!(err instanceof GatewayError)) console.warn('Failed to load DM channels:', err);
     }
   };
 
@@ -1327,6 +1284,7 @@ export default function App() {
       loadMessages(activeChannel.id, 1, false, null, 30);
       const conversationKind = isDirectMessageChannel(activeChannel) ? 'dm' : 'channel';
       return () => {
+        apiV2Client.cancelAllMessageRequests();
         pbService.cancelMessagePage(activeChannel.id, conversationKind);
       };
     } else {
@@ -1861,13 +1819,15 @@ export default function App() {
             }
           }
 
-          setNotificationsList((prevList) => {
-            const existingIds = new Set(prevList.map((n) => n.id));
-            const newUnreadItems = remoteNotifs.filter(
-              (rn) => !existingIds.has(rn.id) && !rn.read && rn.sender_id !== activeUserId
-            );
+          const existingIds = new Set(notificationsListRef.current.map((n) => n.id));
+          const newUnreadItems = remoteNotifs.filter(
+            (rn) => !existingIds.has(rn.id) && !rn.read && rn.sender_id !== activeUserId,
+          );
 
-            newUnreadItems.forEach((nItem) => {
+          // Notification side effects intentionally run outside the React
+          // state updater. PocketBase writes and native notification dispatch
+          // must never be repeated by React's development-mode updater.
+          newUnreadItems.forEach((nItem) => {
               const contentStr = nItem.message_content || nItem.message || '';
               const isSignal =
                 contentStr.startsWith('INCOMING_CALL:') ||
@@ -1905,15 +1865,20 @@ export default function App() {
                   }
                 }
               });
-            });
-
-            const cleanRemoteNotifs = remoteNotifs.filter((rn) => {
-              const c = rn.message_content || rn.message || '';
-              return !c.includes('INCOMING_CALL:') && !(rn.id?.startsWith('call_') && !c.includes('[CALL_LOG:'));
-            });
-
-            return cleanRemoteNotifs;
           });
+          const cleanRemoteNotifs = remoteNotifs.filter((rn) => {
+            const c = rn.message_content || rn.message || '';
+            return !c.includes('INCOMING_CALL:') && !(rn.id?.startsWith('call_') && !c.includes('[CALL_LOG:'));
+          });
+          const previousNotifs = notificationsListRef.current;
+          const changed = previousNotifs.length !== cleanRemoteNotifs.length || cleanRemoteNotifs.some((item, index) => {
+            const previous = previousNotifs[index];
+            return !previous || previous.id !== item.id || previous.read !== item.read || previous.message_content !== item.message_content;
+          });
+          if (changed) {
+            notificationsListRef.current = cleanRemoteNotifs;
+            setNotificationsList(cleanRemoteNotifs);
+          }
         }
 
         setSelectedUserProfile((prev) => (prev && prev.id === e.record.id ? mergeUserRecord(prev, e.record) : prev));
@@ -1941,6 +1906,101 @@ export default function App() {
 
 
   // --- CORE SERVICES ---
+
+  const getBootstrapForCurrentUser = (bypassCircuit = false): Promise<any> => {
+    const userId = currentUser?.id;
+    if (!userId) return Promise.reject(new GatewayError('Authentication is required.', { code: 'unauthorized' }));
+
+    const cached = bootstrapCacheRef.current;
+    if (!bypassCircuit && cached && cached.userId === userId && Date.now() - cached.timestamp < messageCacheTtlMs) {
+      return Promise.resolve(cached.data);
+    }
+    if (bootstrapInFlightRef.current?.userId === userId) {
+      return bootstrapInFlightRef.current.promise;
+    }
+
+    let savedServerId: string | null = null;
+    try {
+      savedServerId = localStorage.getItem('last_active_server_id');
+    } catch {}
+
+    const promise = apiV2Client.getBootstrap(savedServerId, { bypassCircuit }).then((data) => {
+      bootstrapCacheRef.current = { userId, data, timestamp: Date.now() };
+      return data;
+    });
+    bootstrapInFlightRef.current = { userId, promise };
+    promise.finally(() => {
+      if (bootstrapInFlightRef.current?.promise === promise) bootstrapInFlightRef.current = null;
+    }).catch(() => {});
+    return promise;
+  };
+
+  const applyBootstrapData = (data: any) => {
+    if (!data || !currentUser?.id) return;
+    const serverList = Array.isArray(data.servers) ? data.servers as Server[] : [];
+    const dmList = Array.isArray(data.dms) ? data.dms : [];
+    const dmChannels = dmList
+      .filter((dm: any) => dm?.id && dm?.counterpart?.id)
+      .map((dm: any): Channel => ({
+        id: `dm-server-${dm.id}`,
+        name: `@${dm.counterpart.username}`,
+        type: 'text',
+        server: 'dm',
+        description: `Direct Messages with ${dm.counterpart.display_name || dm.counterpart.username}`,
+        recipientUser: dm.counterpart,
+        created: dm.created,
+        updated: dm.updated,
+      }));
+
+    setServers((previous) => {
+      if (previous.length === serverList.length && previous.every((server, index) => server.id === serverList[index]?.id && server.name === serverList[index]?.name && server.icon === serverList[index]?.icon)) {
+        return previous;
+      }
+      return serverList;
+    });
+    offlineCacheService.saveServers(currentUser.id, serverList);
+
+    setAllDmChannels((previous) => {
+      if (previous.length === dmChannels.length && previous.every((channel, index) => channel.id === dmChannels[index]?.id && channel.recipientUser?.avatar === dmChannels[index]?.recipientUser?.avatar)) {
+        return previous;
+      }
+      return dmChannels.filter((channel) => !closedDmIds.has(channel.id) && !closedDmIds.has(channel.recipientUser?.id || ''));
+    });
+    offlineCacheService.saveDmChannels(currentUser.id, dmChannels);
+    dmList.forEach((dm: any) => {
+      if (dm?.counterpart?.id) pbService.setCachedPrivateChatServer(dm.counterpart.id, dm);
+      if (dm?.id) pbService.setCachedPrivateChatServer(dm.id, dm);
+    });
+
+    const activeServerId = data.activeServerId || serverList[0]?.id || null;
+    const activeServerFromBootstrap = serverList.find((server) => server.id === activeServerId) || null;
+    const bootstrapChannels = activeServerId && Array.isArray(data.channels) ? data.channels as Channel[] : [];
+    if (activeServerId) {
+      channelsCache.current[activeServerId] = bootstrapChannels;
+      channelCacheFreshnessRef.current[activeServerId] = Date.now();
+      offlineCacheService.saveChannels(activeServerId, bootstrapChannels);
+    }
+
+    if (activeServerFromBootstrap && (!activeServerRef.current || activeServerRef.current.id !== activeServerFromBootstrap.id)) {
+      setActiveServer(activeServerFromBootstrap);
+    }
+    if (activeServerId && activeServerRef.current?.id === activeServerId) {
+      setChannels(bootstrapChannels);
+    }
+
+    if (activeServerId && bootstrapChannels.length > 0) {
+      const current = activeChannelRef.current;
+      if (!current || current.server !== activeServerId) {
+        let preferred: Channel | undefined;
+        try {
+          const savedChannelId = localStorage.getItem(`last_active_channel_id_${activeServerId}`);
+          preferred = bootstrapChannels.find((channel) => channel.id === savedChannelId);
+        } catch {}
+        preferred = preferred || bootstrapChannels.find((channel) => channel.type === 'text') || bootstrapChannels[0];
+        if (preferred) setActiveChannel(preferred);
+      }
+    }
+  };
 
   const loadServers = async () => {
     // 1. Instantly display cached servers synchronously (0ms)
@@ -1973,35 +2033,15 @@ export default function App() {
       }
     }
 
-    // 2. Background sync with server
+    // 2. One background bootstrap request for servers, DMs, profiles, and the
+    // first server's channels. Cached data above remains visible if it fails.
     try {
-      const list = await pbService.fetchServers();
-      setServers((prev) => {
-        if (
-          prev.length === list.length &&
-          prev.every((s, i) => s.id === list[i]?.id && s.name === list[i]?.name && s.icon === list[i]?.icon && s.banner === list[i]?.banner)
-        ) {
-          return prev;
-        }
-        return list;
-      });
-
-      if (currentUser?.id && list.length > 0) {
-        offlineCacheService.saveServers(currentUser.id, list);
-      }
-
-      if (list.length > 0) {
-        if (!activeServerRef.current) {
-          const savedServerId = localStorage.getItem('last_active_server_id');
-          const restoredServer = list.find((s) => s.id === savedServerId) || list[0];
-          setActiveServer(restoredServer);
-          setShowDiscoveryCenter(false);
-        }
-      } else {
-        setShowDiscoveryCenter(true);
-      }
+      const bootstrap = await getBootstrapForCurrentUser();
+      applyBootstrapData(bootstrap);
+      if (Array.isArray(bootstrap.servers) && bootstrap.servers.length > 0) setShowDiscoveryCenter(false);
+      else setShowDiscoveryCenter(true);
     } catch (err) {
-      console.error('Failed to load servers:', err);
+      if (!(err instanceof GatewayError)) console.error('Failed to load servers:', err);
     }
   };
 
@@ -2043,10 +2083,15 @@ export default function App() {
       }
     }
 
-    // 2. Background sync from server
+    // 2. Refresh through the gateway only when the local channel snapshot is
+    // stale. A failed request must not trigger PocketBase fallback waterfalls.
+    const cachedAt = channelCacheFreshnessRef.current[serverId] || 0;
+    if (cachedAt > 0 && Date.now() - cachedAt < messageCacheTtlMs) return;
+    if (apiV2Client.isCircuitOpen()) return;
     try {
-      const list = await pbService.fetchChannels(serverId);
+      const list = await apiV2Client.getChannels(serverId);
       channelsCache.current[serverId] = list;
+      channelCacheFreshnessRef.current[serverId] = Date.now();
       setChannels((prev) => {
         if (
           prev.length === list.length &&
@@ -2082,7 +2127,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error('Failed to load channels:', err);
+      if (!(err instanceof GatewayError)) console.error('Failed to load channels:', err);
     }
   };
 
@@ -2212,8 +2257,8 @@ export default function App() {
         if (!targetUser?.id) return;
         if (!chatServerId) chatServerId = pbService.getCachedPrivateChatServer(targetUser.id)?.id;
         if (!chatServerId) {
-          const resolved = await pbService.getOrCreatePrivateChatServer(targetUser.id);
-          chatServerId = resolved?.id;
+          const resolved = await apiV2Client.createDm(targetUser.id);
+          chatServerId = resolved.conversation?.id;
         }
         if (!chatServerId) return;
 
@@ -2223,7 +2268,7 @@ export default function App() {
         const before = append
           ? (messageCursorRef.current[cacheKey] || (oldest?.created ? { created: oldest.created, id: oldest.id } : null) as MessageCursor | null)
           : undefined;
-        const result = await pbService.fetchDirectMessagePage(chatServerId, append ? 50 : 30, before || undefined);
+        const result = await apiV2Client.getMessages('dm', chatServerId, append ? 50 : 30, before || undefined);
         const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, result.hasMore, pageNum);
         const cacheData = { items: merged.items, page: pageNum, hasMore: result.hasMore };
         const visibleWindow = selectActiveMessageWindow(merged.items, currentDataset, append);
@@ -2273,7 +2318,7 @@ export default function App() {
 
         if (oldestMsg) {
           const before = messageCursorRef.current[channelId] || { created: oldestMsg.created!, id: oldestMsg.id };
-          const result = await pbService.fetchMessagePage(channelId, 'channel', 50, before);
+          const result = await apiV2Client.getMessages('channel', channelId, 50, before);
 
           if (result.items.length === 0 && !result.hasMore) {
             // Confirm 0 older messages exist in PocketBase
@@ -2329,7 +2374,7 @@ export default function App() {
           }
         } else {
           // Fallback if current dataset is empty
-            const result = await pbService.fetchMessagePage(channelId, 'channel', 30);
+            const result = await apiV2Client.getMessages('channel', channelId, 30);
             const hasMore = result.hasMore;
             const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, hasMore, 1);
           messageCursorRef.current[channelId] = result.nextCursor;
@@ -2343,7 +2388,7 @@ export default function App() {
       } else {
         // INITIAL LOAD: fetch only the newest page; older history is loaded by
         // the anchored cursor path when the user reaches the top.
-        const result = await pbService.fetchMessagePage(channelId, 'channel', 30);
+        const result = await apiV2Client.getMessages('channel', channelId, 30);
 
         let itemsToSet = [...result.items];
         if (targetMessageId && !itemsToSet.some((m) => m.id === targetMessageId)) {
@@ -2463,7 +2508,7 @@ export default function App() {
   };
 
   const handleSendMessage = async (content: string, replyToId?: string, attachments?: File[], uploadedAttachments?: Attachment[]) => {
-    if (!activeChannel) return;
+    if (!activeChannel || backendAvailability === 'offline') return;
 
     const finalContent = content.trim() === '' ? '  ' : content;
 
@@ -2561,8 +2606,8 @@ export default function App() {
           if (targetUser) {
             let chatServerId = activeChannel.id.startsWith('dm-server-') ? activeChannel.id.replace('dm-server-', '') : undefined;
             if (!chatServerId) {
-              const privateChatServer = await pbService.getOrCreatePrivateChatServer(targetUser.id);
-              chatServerId = privateChatServer?.id;
+              const privateChatServer = await apiV2Client.createDm(targetUser.id);
+              chatServerId = privateChatServer.conversation?.id;
             }
             msg = await pbService.sendDirectMessage(targetUser.id, finalContent, replyToId, chatServerId, hasAttachment);
           } else {
@@ -2871,6 +2916,7 @@ export default function App() {
   // DELETIONS
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
+    if (backendAvailability === 'offline') return;
     try {
       const now = new Date().toISOString();
       await pbService.editMessage(messageId, newContent);
@@ -2881,7 +2927,7 @@ export default function App() {
   };
 
   const handleToggleReaction = async (messageId: string, emoji: string) => {
-    if (!currentUser) return;
+    if (!currentUser || backendAvailability === 'offline') return;
     const currentActiveChan = activeChannelRef.current || activeChannel;
     const isDm = Boolean(
       currentActiveChan &&
@@ -2922,6 +2968,7 @@ export default function App() {
   };
 
   const handleDeleteMessage = async (messageId: string) => {
+    if (backendAvailability === 'offline') return;
     try {
       await MessageDeletionService.deleteMessage(messageId, {
         channelId: activeChannel?.id,
@@ -2943,6 +2990,7 @@ export default function App() {
   };
 
   const handleDeleteChannel = async (channelId: string) => {
+    if (backendAvailability === 'offline') return;
     try {
       await pbService.deleteChannel(channelId);
       setChannels((prev) => prev.filter((c) => c.id !== channelId));
@@ -2955,6 +3003,7 @@ export default function App() {
   };
 
   const handleDeleteServer = async (serverId: string) => {
+    if (backendAvailability === 'offline') return;
     try {
       const targetServer = servers.find((s) => s.id === serverId);
       const serverName = targetServer?.name || 'Server';
@@ -2975,11 +3024,12 @@ export default function App() {
   };
 
   const handleLeaveServer = (serverToLeave: Server) => {
-    if (!currentUser) return;
+    if (!currentUser || backendAvailability === 'offline') return;
     setLeavingServer(serverToLeave);
   };
 
   const handleLeaveServerSuccess = async (leftServer: Server, newOwnerId?: string) => {
+    if (backendAvailability === 'offline') return;
     setServerSettingsModalServer(null);
     setLeavingServer(null);
 
@@ -3224,9 +3274,10 @@ export default function App() {
   }, []);
 
   const handleOpenCreateServerFromSidebar = useCallback(() => {
+    if (backendAvailability === 'offline') return;
     setShowCreateServer(true);
     setIsSidebarOpen(false);
-  }, []);
+  }, [backendAvailability]);
 
   const handleSelectFriendsFromSidebar = useCallback(() => {
     setDiscoveryTab('friends');
@@ -3245,8 +3296,9 @@ export default function App() {
   }, []);
 
   const handleOpenNewDmModalFromSidebar = useCallback(() => {
+    if (backendAvailability === 'offline') return;
     setShowNewDmModal(true);
-  }, []);
+  }, [backendAvailability]);
 
   const handleOpenServerSettingsFromSidebar = useCallback((srv: Server) => {
     setServerSettingsModalServer(srv);
@@ -3385,10 +3437,15 @@ export default function App() {
         return copy;
       });
 
-      // Background non-blocking record resolution and sync
+      // Resolve a new DM through the gateway only when no cached conversation
+      // exists. Never fabricate a PocketBase-looking id after a failed write;
+      // the temporary dm-user id remains read-only and retryable.
       (async () => {
         try {
-          const privateChatServer = await pbService.getOrCreatePrivateChatServer(targetUser.id);
+          if (existingDm || cachedServer?.id) return;
+          const created = await apiV2Client.createDm(targetUser.id);
+          const privateChatServer = created.conversation;
+          if (!privateChatServer?.id) throw new Error('Gateway returned no DM id.');
           const realDmChannelId = `dm-server-${privateChatServer.id}`;
 
           const resolvedDmChannel: Channel = {
@@ -3396,6 +3453,9 @@ export default function App() {
             id: realDmChannelId,
             created: privateChatServer.created || dmChannel.created
           };
+
+          pbService.setCachedPrivateChatServer(targetUser.id, privateChatServer);
+          setAllDmChannels((prev) => prev.some((channel) => channel.id === realDmChannelId) ? prev : [resolvedDmChannel, ...prev]);
 
           setActiveChannel((curr) => (curr?.id === initialDmChannelId || curr?.id === realDmChannelId ? resolvedDmChannel : curr));
           setActiveDmChannel((curr) => (curr?.id === initialDmChannelId || curr?.id === realDmChannelId ? resolvedDmChannel : curr));
@@ -3405,7 +3465,7 @@ export default function App() {
           // cursor/cache state established by the real loader.
           loadAllDmChannels();
         } catch (err) {
-          console.warn('Background DM resolution error:', err);
+          if (!(err instanceof GatewayError)) console.warn('Background DM resolution error:', err);
           setIsInitialLoadingChannel(false);
         }
       })();
@@ -3501,7 +3561,7 @@ export default function App() {
     if (!activeServer) return;
     try {
       // Find the voice channel of the current server
-      const list = await pbService.fetchChannels(activeServer.id);
+      const list = await apiV2Client.getChannels(activeServer.id);
       const voiceChan = list.find((c) => c.type === 'voice');
       if (voiceChan) {
         if (activeVoiceChannel && activeVoiceChannel.id === voiceChan.id) {
@@ -3653,7 +3713,7 @@ export default function App() {
         setShowDiscoveryCenter(false);
         let serverChans = channelsCache.current[targetServer.id];
         if (!serverChans || serverChans.length === 0) {
-          serverChans = await pbService.fetchChannels(targetServer.id);
+          serverChans = await apiV2Client.getChannels(targetServer.id);
           channelsCache.current[targetServer.id] = serverChans;
         }
         let targetChan = serverChans.find((c) => c.id === notif.channel_id);
@@ -3866,8 +3926,27 @@ export default function App() {
         isLight={effectiveTheme === 'light'}
         lang={lang}
         onOpenSettings={() => setShowSettings(true)}
-        isConnected={true}
+        isConnected={backendAvailability !== 'offline'}
       />
+      {currentUser && backendAvailability === 'offline' && (
+        <div
+          role="status"
+          className="z-40 flex min-h-8 shrink-0 items-center justify-center gap-2 border-b border-amber-400/30 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-200"
+        >
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>{lang === 'ar' ? 'الخادم غير متاح — يتم عرض البيانات المحفوظة للقراءة فقط.' : 'Chat server unavailable — cached data is read-only.'}</span>
+          <button
+            type="button"
+            className="rounded border border-amber-300/40 px-2 py-0.5 font-semibold hover:bg-amber-300/10"
+            onClick={() => {
+              apiV2Client.markOnline();
+              void loadServers();
+            }}
+          >
+            {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
+          </button>
+        </div>
+      )}
       <div className="flex-1 flex w-full min-h-0 overflow-hidden relative">
         <AnimatePresence mode="wait">
           {resetToken ? (
@@ -4190,12 +4269,12 @@ export default function App() {
                   <DiscoveryCenter
                     initialTab={discoveryTab}
                     currentUser={currentUser}
-                    onJoinServerSuccess={async (serverId) => {
-                      await loadServers();
-                      // Load server channels
-                      try {
-                        const list = await pbService.fetchServers();
-                        const match = list.find((s) => s.id === serverId);
+                      onJoinServerSuccess={async (serverId) => {
+                        await loadServers();
+                        // Load server channels
+                        try {
+                          const list = await apiV2Client.getServers({ bypassCircuit: true, dedupeKey: `servers:joined:${serverId}` });
+                          const match = list.find((s) => s.id === serverId);
                         if (match) {
                           setActiveServer(match);
                           await loadChannels(serverId);

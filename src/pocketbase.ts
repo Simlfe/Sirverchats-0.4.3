@@ -110,6 +110,27 @@ export function withTimeout<T>(promise: Promise<T>, ms: number = 7000, fallbackV
   });
 }
 
+/** Only schema/version mismatches may use a compatibility query. Network,
+ * timeout, Cloudflare, and generic server failures must fail fast so callers
+ * can keep rendering their local cache instead of starting a waterfall. */
+export function isSchemaCompatibilityError(error: any): boolean {
+  const status = Number(error?.status || error?.response?.status || 0);
+  const details = error?.details || error?.response?.data || error?.data || {};
+  const message = [
+    error?.message,
+    details?.message,
+    details?.data?.message,
+    error?.response?.url,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/unknown field|no such field|field .* does not exist|missing field/.test(message)) return true;
+  if (/missing collection|no such collection|collection .* not found/.test(message)) return true;
+  // A list request returning 404 is a missing collection/route, while a
+  // record operation can legitimately return 404 and must not trigger a
+  // compatibility waterfall. queryCollection includes the collection name in
+  // its details so only its list-route failures use this fallback.
+  return status === 404 && Boolean(details?.collection || /\/collections\/[^/]+\/records/.test(message));
+}
+
 export function getFileUrl(collection: string, recordId: string, filename: string, queryParams?: string): string {
   if (!filename) return '';
   if (filename.startsWith('data:') || filename.startsWith('blob:') || filename.startsWith('http')) {
@@ -1327,7 +1348,8 @@ class PocketBaseService {
           }
         }
       } catch (fastErr) {
-        // Continue to server_members query
+        if (!isSchemaCompatibilityError(fastErr)) throw fastErr;
+        // Continue to the normalized membership query only for older schemas.
       }
 
       let records: any[] = [];
@@ -1337,7 +1359,8 @@ class PocketBaseService {
           expand: 'server',
         });
       } catch (innerErr) {
-        console.warn('Failed to fetch from server_members, trying servers collection directly:', innerErr);
+        if (!isSchemaCompatibilityError(innerErr)) throw innerErr;
+        console.warn('Normalized server membership is unavailable; using the legacy relation once:', innerErr);
         // Fallback: fetch directly from 'servers' collection
         const directServers = await this.pb.collection('servers').getFullList({
           sort: '-created'
@@ -1356,12 +1379,6 @@ class PocketBaseService {
         .map((r) => r.expand!.server as any as Server)
         .filter((s) => !isDmServer(s));
       
-      // Sync in_servers relation on user record for future sub-millisecond loads
-      if (servers.length > 0) {
-        const serverIds = Array.from(new Set(servers.map((s) => s.id)));
-        this.pb.collection('users').update(currentUserId, { in_servers: serverIds }).catch(() => {});
-      }
-
       // If user has no servers joined on this real instance, join a default one or create one
       if (servers.length === 0) {
         // Fetch all public servers
@@ -1395,8 +1412,8 @@ class PocketBaseService {
       });
       return servers.filter((s) => !isDmServer(s));
     } catch (err) {
-      console.error('Failed to fetch servers:', err);
-      // Last-resort fallback: try to fetch from servers directly
+      if (!isSchemaCompatibilityError(err)) throw err;
+      console.warn('Failed to fetch normalized servers; trying the legacy collection once:', err);
       try {
         const fallbackServers = await this.pb.collection('servers').getFullList();
         const list = (fallbackServers as any as Server[]).filter((s) =>
@@ -1409,8 +1426,7 @@ class PocketBaseService {
         });
         return list;
       } catch (fallbackErr) {
-        console.error('All server fetch methods failed:', fallbackErr);
-        return []; // Return empty list rather than throwing to prevent blocking the UI
+        throw fallbackErr;
       }
     }
   }
@@ -1771,6 +1787,7 @@ class PocketBaseService {
         this.setCachedChannels(serverId, channels);
         return channels;
       } catch (e) {
+        if (!isSchemaCompatibilityError(e)) throw e;
         console.warn("Retrying fetchChannels without position sort key:", e);
         const list = await this.pb.collection('channels').getFullList({
           filter: `server = "${serverId}"`,
@@ -1788,7 +1805,8 @@ class PocketBaseService {
         return channels;
       }
     } catch (err) {
-      console.error('Failed to fetch channels:', err);
+      if (!isSchemaCompatibilityError(err)) throw err;
+      console.warn('Failed to fetch channels:', err);
       return this.getCachedChannels(serverId);
     }
   }
@@ -1865,7 +1883,9 @@ class PocketBaseService {
       };
     } catch (error) {
       console.warn(`Failed to fetch ${kind} message page:`, error);
-      return { items: [], nextCursor: null, hasMore: true };
+      // A failed page is not an empty page. Callers must keep cached messages
+      // and pagination state intact and surface the unavailable state.
+      throw error;
     } finally {
       if (this.messagePageControllers.get(requestKey) === controller) {
         this.messagePageControllers.delete(requestKey);
@@ -3305,9 +3325,9 @@ class PocketBaseService {
       return newChatServer;
     } catch (createErr) {
       console.warn('Failed to create private chat server:', createErr);
-      const fallbackServer = { id: `pcs-${currentId}-${recipientId}`, users: [currentId, recipientId], user1: currentId, user2: recipientId };
-      this.setCachedPrivateChatServer(recipientId, fallbackServer);
-      return fallbackServer;
+      // Never cache a fabricated conversation id. A later retry must resolve
+      // the real PocketBase record after the backend becomes reachable.
+      throw createErr;
     }
   }
 

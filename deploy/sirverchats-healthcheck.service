@@ -1,0 +1,9 @@
+[Unit]
+Description=Check SirverChats local services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/sirverchats-healthcheck.sh

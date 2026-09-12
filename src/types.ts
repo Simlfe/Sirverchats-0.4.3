@@ -122,6 +122,29 @@ export interface Channel {
   updated?: string;
 }
 
+/** Normalized DM row returned by the versioned gateway. */
+export interface DmSummary {
+  id: string;
+  created?: string;
+  updated?: string;
+  users?: string[];
+  user1?: string;
+  user2?: string;
+  counterpart: User;
+}
+
+/** Single-request login bootstrap for web and Tauri clients. */
+export interface BootstrapResponse {
+  user: User;
+  servers: Server[];
+  dms: DmSummary[];
+  activeServerId: string | null;
+  channels: Channel[];
+  generatedAt: string;
+}
+
+export type BackendAvailability = 'online' | 'degraded' | 'offline';
+
 export interface Message {
   id: string;
   content: string;

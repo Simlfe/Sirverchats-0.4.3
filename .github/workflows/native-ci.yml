@@ -70,7 +70,7 @@ jobs:
 
   android:
     name: Tauri Android APK
-    needs: web-quality
+    needs: [web-quality, gateway-quality]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -115,7 +115,7 @@ jobs:
 
   windows:
     name: Tauri Windows release build
-    needs: web-quality
+    needs: [web-quality, gateway-quality]
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -145,7 +145,7 @@ jobs:
 
   linux:
     name: Tauri Linux AppImage and deb
-    needs: web-quality
+    needs: [web-quality, gateway-quality]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

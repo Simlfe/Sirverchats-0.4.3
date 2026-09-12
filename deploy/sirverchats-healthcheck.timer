@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the SirverChats local service health check every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
