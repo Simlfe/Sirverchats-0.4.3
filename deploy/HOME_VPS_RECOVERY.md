@@ -58,7 +58,7 @@ names discovered above rather than inventing replacements:
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now pocketbase.service sirverchats-api-v2.service cloudflared-sirverchats.service
+sudo systemctl enable --now <existing-pocketbase-unit> sirverchats-api-v2.service cloudflared.service
 sudo systemctl enable --now sirverchats-healthcheck.timer
 sudo nginx -t && sudo systemctl reload nginx
 ```
