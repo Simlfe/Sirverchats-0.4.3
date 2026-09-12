@@ -43,31 +43,13 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [3/4] Syncing assets to Capacitor Android project...
-call npx cap sync android
-if %errorlevel% neq 0 (
-    echo [ERROR] Capacitor sync failed.
-    pause
-    exit /b 1
-)
-
-echo.
-echo [4/4] Compiling Android APK using Gradle...
-cd android
-if not exist gradlew.bat (
-    echo [ERROR] gradlew.bat not found in android directory.
-    cd ..
-    pause
-    exit /b 1
-)
-
-call gradlew.bat assembleDebug
+echo [3/3] Compiling Tauri Android APK...
+call npx tauri android build --debug --apk
 set GRADLE_STATUS=%errorlevel%
-cd ..
 
 if %GRADLE_STATUS% neq 0 (
     echo.
-    echo [ERROR] Gradle build failed.
+    echo [ERROR] Tauri Android build failed.
     echo Make sure Android SDK or Android Studio is installed on your computer.
     echo You can also open the /android folder directly inside Android Studio.
     pause
@@ -76,12 +58,12 @@ if %GRADLE_STATUS% neq 0 (
 
 echo.
 echo ========================================================
-echo [SUCCESS] Android APK built successfully!
+echo [SUCCESS] Tauri Android APK built successfully!
 echo.
 echo Output APK Location:
-echo   android\app\build\outputs\apk\debug\app-debug.apk
+echo   src-tauri\gen\android\app\build\outputs\apk\debug\app-debug.apk
 echo.
 echo You can install it on your device via USB:
-echo   adb install android\app\build\outputs\apk\debug\app-debug.apk
+echo   adb install src-tauri\gen\android\app\build\outputs\apk\debug\app-debug.apk
 echo ========================================================
 pause

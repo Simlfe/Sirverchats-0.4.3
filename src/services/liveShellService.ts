@@ -48,19 +48,14 @@ class LiveShellService {
       return true;
     }
 
-    // 2. Only perform automatic transition if running inside Tauri desktop environment
+    // 2. Tauri clients always use the bundled React UI. Keeping the shell local
+    // makes Android, Windows, and Linux builds deterministic and avoids turning
+    // a native app into a remote WebView when the public site changes.
     if (!isTauri) {
       return false;
     }
-
-    const settings = getCachedUserSettings();
-    if (settings?.updates?.enableLiveWebShell === false) {
-      console.log('[LiveShell] Live Web Shell disabled by user settings.');
-      return false;
-    }
-
-    // 3. Probe the live web endpoint to verify it is active and responding
-    return await this.probeAndTransition();
+    console.log('[LiveShell] Disabled for Tauri clients; using the bundled React UI.');
+    return false;
   }
 
   /**

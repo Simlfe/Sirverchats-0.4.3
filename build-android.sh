@@ -15,21 +15,15 @@ echo "[1/4] Installing NPM dependencies..."
 npm install
 
 # Step 2: Build web assets
-echo "[2/4] Building Vite web application..."
+echo "[2/3] Building Vite web application..."
 npm run build
 
-# Step 3: Capacitor sync
-echo "[3/4] Syncing web assets to Android project..."
-npx cap sync android
-
-# Step 4: Build APK with Gradle
-echo "[4/4] Building APK using Gradle..."
-chmod +x android/gradlew
-cd android
-./gradlew assembleDebug
+# Step 3: Build through the Tauri Android target
+echo "[3/3] Building APK with Tauri..."
+npx tauri android build --debug --apk
 
 echo "========================================================"
 echo "[SUCCESS] Android APK built successfully!"
 echo "APK location:"
-echo "  android/app/build/outputs/apk/debug/app-debug.apk"
+echo "  src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk"
 echo "========================================================"

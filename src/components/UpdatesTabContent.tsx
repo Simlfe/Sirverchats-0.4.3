@@ -560,12 +560,12 @@ export default function UpdatesTabContent({
         </div>
       </div>
 
-      {/* Live Web Shell (Instant Zero-Download Updates for Desktop Apps) */}
+      {/* Live Web Shell diagnostic (Tauri clients keep the bundled UI) */}
       <div className="p-5 rounded-2xl border bg-[var(--theme-bg-card)] border-[var(--theme-border)] space-y-4">
         <div className="flex items-center justify-between">
           <label className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5 text-accent">
             <Globe className="w-4 h-4" />
-            <span>{lang === 'ar' ? 'المزامنة المباشرة من الويب (تحديث فوري بدون تنزيل)' : 'Live Web Shell (Zero-Download Instant Updates)'}</span>
+            <span>{lang === 'ar' ? 'فحص اتصال الويب المباشر' : 'Live Web Connection Check'}</span>
           </label>
           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/25">
             {liveShellStatus.isLiveWeb
@@ -578,20 +578,20 @@ export default function UpdatesTabContent({
 
         <p className="text-[11px] text-[var(--theme-text-muted)] leading-relaxed">
           {lang === 'ar'
-            ? 'عند تفعيل هذه الميزة، يقوم تطبيق سطح المكتب (AppImage / Linux / Windows) بتحميل نسخة الويب المباشرة تلقائياً من النطاق المحدد. تظهر أي تحديثات فوراً لجميع المستخدمين بمجرد تحديث الموقع ودون الحاجة لتنزيل أي ملفات تثبيت جديدة!'
-            : 'When enabled, the desktop client (AppImage / Linux / Windows) automatically loads the live web application from your domain. All future app updates apply immediately to every user without compiling or downloading new binaries!'}
+            ? 'تستخدم تطبيقات Tauri نسخة React المرفقة محلياً دائماً. يمكنك استخدام الفحص أدناه للتحقق من توفر موقع الويب المباشر بدون تبديل واجهة التطبيق.'
+            : 'Tauri apps always use the bundled React UI. Use the check below only to verify that the public web site is reachable; it never replaces the native shell.'}
         </p>
 
         {/* Toggle Live Web Shell */}
         <label className="flex items-center justify-between p-3 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-tertiary)] cursor-pointer hover:bg-[var(--theme-bg-secondary)] transition-all">
           <div className="space-y-0.5">
             <span className="font-extrabold text-xs text-[var(--theme-text-primary)]">
-              {lang === 'ar' ? 'تفعيل غلاف الويب المباشر للتطبيقات المكتبية' : 'Enable Live Web Shell for Desktop Apps'}
+              {lang === 'ar' ? 'تفعيل فحص اتصال الويب المباشر' : 'Enable Live Web Connection Check'}
             </span>
             <p className="text-[10px] text-[var(--theme-text-muted)]">
               {lang === 'ar'
-                ? 'التبديل التلقائي إلى موقع الويب المباشر عند توفره، مع البقاء على النسخة المحلية في حال عدم الاتصال.'
-                : 'Automatically connects to live web app when reachable, safely falling back to local files offline.'}
+                ? 'لا يغيّر هذا الخيار واجهة Tauri المحلية؛ يستخدم فقط لحفظ تفضيل الفحص.'
+                : 'This preference does not replace the local Tauri UI; it only controls the diagnostic setting.'}
             </p>
           </div>
           <input

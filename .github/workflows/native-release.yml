@@ -1,4 +1,4 @@
-name: Publish native Flutter release
+name: Publish Tauri release
 
 on:
   push:
@@ -8,164 +8,105 @@ on:
 permissions:
   contents: write
 
-env:
-  FLUTTER_VERSION: '3.44.6'
-
 jobs:
   web:
-    name: Release Flutter Web
+    name: Package React Web UI
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: native
     steps:
       - uses: actions/checkout@v5
-      - uses: subosito/flutter-action@v2
+      - uses: actions/setup-node@v5
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - run: flutter build web --release
-      - name: Add Pages metadata
-        working-directory: .
-        run: |
-          cp native/web/_redirects native/build/web/_redirects
-          cp native/web/_headers native/build/web/_headers
-      - name: Check compressed baseline
-        working-directory: .
-        run: |
-          export FLUTTER_WEB_BASELINE_KIB="$(cat native/tool/flutter_web_baseline_kib)"
-          node native/tool/check_web_bundle.mjs
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm run check:bundle
       - uses: actions/upload-artifact@v4
         with:
-          name: sirverchats-native-web
-          path: native/build/web
+          name: sirverchats-react-web
+          path: dist
           if-no-files-found: error
 
   android:
-    name: Release Android APK and AAB
+    name: Tauri Android APK and AAB
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: native
-    env:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      FIREBASE_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
     steps:
       - uses: actions/checkout@v5
-      - uses: subosito/flutter-action@v2
+      - uses: actions/setup-node@v5
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-      - name: Require Android signing secrets
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        shell: bash
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - run: npm ci --no-audit --no-fund
+      - name: Build Tauri Android release artifacts
+        run: npx tauri android build --ci --apk --aab --target aarch64
+      - name: Rename Android artifacts
         shell: bash
         run: |
-          for value in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD FIREBASE_GOOGLE_SERVICES_JSON_BASE64; do
-            if [[ -z "${!value}" ]]; then
-              echo "Missing required release secret: ${value}" >&2
-              exit 1
-            fi
-          done
-      - name: Configure Android signing
-        shell: bash
-        run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
-          {
-            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
-            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
-            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
-            printf 'storeFile=upload-keystore.jks\n'
-          } > android/key.properties
-          printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android/app/google-services.json
-      - run: flutter pub get
-      - run: flutter build apk --release --build-name=0.5.0 --build-number=${{ github.run_number }}
-      - run: flutter build appbundle --release --build-name=0.5.0 --build-number=${{ github.run_number }}
-      - name: Rename signed Android artifacts
-        shell: bash
-        run: |
-          cp build/app/outputs/flutter-apk/app-release.apk "build/sirverchats-${GITHUB_REF_NAME}-android.apk"
-          cp build/app/outputs/bundle/release/app-release.aab "build/sirverchats-${GITHUB_REF_NAME}-android.aab"
+          mkdir -p release-assets
+          apk="$(find src-tauri/gen/android/app/build/outputs -type f -name '*.apk' | sort | head -n 1)"
+          aab="$(find src-tauri/gen/android/app/build/outputs -type f -name '*.aab' | sort | head -n 1)"
+          test -n "$apk" && cp "$apk" "release-assets/sirverchats-${GITHUB_REF_NAME}-android.apk"
+          test -n "$aab" && cp "$aab" "release-assets/sirverchats-${GITHUB_REF_NAME}-android.aab"
       - uses: actions/upload-artifact@v4
         with:
-          name: sirverchats-native-android
-          path: |
-            native/build/sirverchats-${{ github.ref_name }}-android.apk
-            native/build/sirverchats-${{ github.ref_name }}-android.aab
+          name: sirverchats-tauri-android
+          path: release-assets/*
           if-no-files-found: error
 
   windows:
-    name: Release Windows desktop
+    name: Tauri Windows installer
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: native
     steps:
       - uses: actions/checkout@v5
-      - uses: subosito/flutter-action@v2
+      - uses: actions/setup-node@v5
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - run: flutter build windows --release --build-name=0.5.0 --build-number=${{ github.run_number }}
-      - name: Archive Windows release
-        shell: pwsh
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "build/sirverchats-${{ github.ref_name }}-windows-x64.zip"
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --no-audit --no-fund
+      - run: npx tauri build --ci --no-sign --bundles nsis
       - uses: actions/upload-artifact@v4
         with:
-          name: sirverchats-native-windows
-          path: native/build/sirverchats-${{ github.ref_name }}-windows-x64.zip
+          name: sirverchats-tauri-windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
   linux:
-    name: Release Linux AppImage, deb, and archive
+    name: Tauri Linux AppImage and deb
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: native
     steps:
       - uses: actions/checkout@v5
-      - name: Install Linux build and packaging dependencies
-        working-directory: .
+      - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-            libstdc++-12-dev libfuse2t64 squashfs-tools dpkg-dev
-      - uses: subosito/flutter-action@v2
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev squashfs-tools \
+            libfuse2t64 || sudo apt-get install -y libfuse2
+      - uses: actions/setup-node@v5
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-      - run: flutter pub get
-      - run: flutter build linux --release --build-name=0.5.0 --build-number=${{ github.run_number }}
-      - name: Install AppImage tool
-        working-directory: .
-        run: |
-          curl --fail --location --retry 3 \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
-            --output "$RUNNER_TEMP/appimagetool"
-          chmod +x "$RUNNER_TEMP/appimagetool"
-      - name: Package Linux release
-        working-directory: .
-        env:
-          APPIMAGETOOL: ${{ runner.temp }}/appimagetool
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-        run: bash native/tool/package-linux.sh "${GITHUB_REF_NAME#v}"
-      - name: Prefix release filenames
-        working-directory: .
-        run: |
-          mkdir -p native/build/linux/release-assets
-          cp native/build/linux/packages/* native/build/linux/release-assets/
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --no-audit --no-fund
+      - run: npx tauri build --ci --no-sign --bundles deb,appimage
       - uses: actions/upload-artifact@v4
         with:
-          name: sirverchats-native-linux
-          path: native/build/linux/release-assets/*
+          name: sirverchats-tauri-linux
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
 
   publish:
@@ -178,7 +119,7 @@ jobs:
           path: release-assets
           merge-multiple: true
       - name: Generate checksums
-        run: sha256sum $(find release-assets -type f -not -name SHA256SUMS -print) > release-assets/SHA256SUMS
+        run: find release-assets -type f -not -name SHA256SUMS -print0 | xargs -0 sha256sum > release-assets/SHA256SUMS
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:

@@ -1,20 +1,28 @@
 # SirverChats
 
-The current client is the native Flutter workspace in [`native/`](native/):
-one Dart codebase for Android, Windows, Linux, and Flutter Web. It talks to the
-versioned gateway at `https://chat.sirverdata.top/api/v2`, uses cursor-paginated
-conversation history with a local Drift cache, and connects to LiveKit only
-when a call is opened. Android and desktop builds are native binaries, not
-WebViews. The root React/Vite/Capacitor/Tauri project remains the legacy 0.4.x
-fallback line.
+The production client is the React/Vite app in `src/`. It is served on the web
+and packaged unchanged with Tauri 2 for Android, Windows, and Linux, so every
+platform uses the same restored UI and chat/call behavior. It talks to the
+versioned gateway at `https://chat.sirverdata.top/api/v2`, keeps the optimized
+cursor-paginated conversation history, and connects to LiveKit when a call is
+opened. The Flutter workspace in [`native/`](native/) is retained as an
+experimental fallback and is not used for production deployment.
 
 Quick start:
 
 ```sh
-cd native
-flutter pub get
-dart run build_runner build
-flutter run -d chrome       # or windows
+npm ci
+npm run lint
+npm run test:unit
+npm run dev
+```
+
+Build Tauri apps with:
+
+```sh
+npm run build
+npx tauri build                         # Windows/Linux
+npx tauri android build --ci --apk --aab
 ```
 
 Build/release details, gateway deployment, CORS, Pages, signing secrets, and

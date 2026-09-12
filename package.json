@@ -18,9 +18,9 @@
     "build:linux": "tauri build",
     "build:linux:dir": "tauri build --no-bundle",
     "build:arch": "bash ./arch/build-arch.sh",
-    "build:android": "npm run build && npx cap sync android",
-    "build:android:apk": "npm run build && npx cap sync android && cd android && ./gradlew assembleDebug",
-    "build:android:release": "npm run build && npx cap sync android && cd android && ./gradlew assembleRelease"
+    "build:android": "npx tauri android build",
+    "build:android:apk": "npx tauri android build --debug --apk",
+    "build:android:release": "npx tauri android build --ci --apk --aab"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.1",

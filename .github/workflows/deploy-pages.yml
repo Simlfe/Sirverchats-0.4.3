@@ -1,4 +1,4 @@
-name: Deploy web app to Cloudflare Pages
+name: Deploy React web app to Cloudflare Pages
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    name: Build and publish native Flutter Web app.sirverdata.top
+    name: Build and publish React UI to app.sirverdata.top
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -16,30 +16,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
-          flutter-version: '3.44.6'
-          channel: stable
-          cache: true
+          node-version: 22
+          cache: npm
 
-      - name: Resolve Flutter dependencies
-        working-directory: native
-        run: flutter pub get
+      - name: Install React dependencies
+        run: npm ci --no-audit --no-fund
 
-      - name: Build Flutter Web app
-        working-directory: native
-        run: flutter build web --release
+      - name: Typecheck React app
+        run: npm run lint
 
-      - name: Add SPA fallback and cache policy
-        run: |
-          cp native/web/_redirects native/build/web/_redirects
-          cp native/web/_headers native/build/web/_headers
+      - name: Run React unit tests
+        run: npm run test:unit
 
-      - name: Verify Flutter Web compressed baseline
-        run: |
-          export FLUTTER_WEB_BASELINE_KIB="$(cat native/tool/flutter_web_baseline_kib)"
-          node native/tool/check_web_bundle.mjs
+      - name: Build React web app
+        run: npm run build
+
+      - name: Verify React bundle budget
+        run: npm run check:bundle
 
       - name: Ensure Cloudflare Pages project exists
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
@@ -70,7 +66,7 @@ jobs:
             --data '{"production_branch":"main"}' \
             >/tmp/sirverchats-project.json
 
-      - name: Attach app.sirverdata.top to the Flutter Pages project
+      - name: Attach app.sirverdata.top to the React Pages project
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         env:
           CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
@@ -86,8 +82,8 @@ jobs:
             exit 0
           fi
 
-          # If the old React Pages project owns the hostname, detach only that
-          # exact hostname so the rollback deployment remains available.
+          # If another Pages project owns the hostname, detach only that exact
+          # hostname before restoring the React production deployment.
           owner=''
           while IFS= read -r candidate; do
             [ -n "${candidate}" ] || continue
@@ -144,7 +140,7 @@ jobs:
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           # This is a Direct Upload project. Omitting --branch promotes the
           # upload to the production deployment used by the custom domain.
-          command: pages deploy native/build/web --project-name=sirverchats
+          command: pages deploy dist --project-name=sirverchats
 
       - name: Purge cached responses for the production hostname
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
@@ -175,12 +171,12 @@ jobs:
           curl -fsS "${api}/domains" "${auth[@]}" | jq '{domains: [.result[]? | {name, status}]}'
           for attempt in $(seq 1 12); do
             html="$(curl --retry 3 --retry-all-errors -fsS https://app.sirverdata.top/ || true)"
-            if printf '%s' "${html}" | grep -q 'flutter_bootstrap.js'; then
-              echo 'app.sirverdata.top is serving Flutter production assets'
+            if printf '%s' "${html}" | grep -q 'assets/index-' && ! printf '%s' "${html}" | grep -q 'flutter_bootstrap.js'; then
+              echo 'app.sirverdata.top is serving the restored React production UI'
               exit 0
             fi
             echo "Waiting for Pages custom-domain activation (attempt ${attempt}/12)"
             sleep 10
           done
-          echo 'app.sirverdata.top is not serving the Flutter production bootstrap' >&2
+          echo 'app.sirverdata.top is not serving the restored React production UI' >&2
           exit 1

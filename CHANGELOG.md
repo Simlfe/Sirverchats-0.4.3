@@ -1,18 +1,16 @@
 # Sirver Application Changelog
 
 ## [Unreleased] - 2026-09-12
-### Native Flutter 0.5.0 migration
-- Added the `/native` Flutter client for Android, Windows, Linux, and Web with
-  shared adaptive UI, Riverpod state, Dio REST, one authenticated WebSocket,
-  Drift/IndexedDB caching, LiveKit calls, attachments, notifications, and
-  persisted drafts/scroll positions.
-- Added the versioned `backend/api-v2` gateway, CORS-safe Nginx/systemd
-  deployment fragments, cursor-paginated message/DM endpoints, normalized
-  realtime events, and lifecycle-only call persistence.
-- Added native quality/build/release automation, Flutter Web Pages deployment
-  configuration, Linux package tooling, bundle-baseline checks, and migration
-  documentation. React/Capacitor/Tauri workflows remain available manually as
-  the legacy 0.4.x line.
+### React/Tauri UI restoration
+- Restored the optimized React UI as the production Cloudflare Pages build for
+  `app.sirverdata.top`.
+- Switched Android packaging from Capacitor to the existing Tauri 2 Android
+  target; Windows and Linux continue to use the same Tauri shell.
+- Updated cross-platform CI, release workflows, local build scripts, and
+  deployment documentation so Tauri is the default packaging path. The
+  Flutter workspace remains an experimental fallback and is not deployed.
+- Retained the versioned API gateway, CORS fixes, pagination, indexes, and
+  PocketBase backup from the performance deployment.
 
 ## [Unreleased] - 2026-09-11
 ### Performance & Reliability

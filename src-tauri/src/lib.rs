@@ -1,3 +1,4 @@
+#[cfg(desktop)]
 use tauri::Manager;
 
 #[cfg(desktop)]
@@ -11,6 +12,11 @@ fn minimize_window(window: tauri::Window) {
     #[cfg(desktop)]
     {
         let _ = window.minimize();
+    }
+
+    #[cfg(mobile)]
+    {
+        let _ = window;
     }
 }
 
@@ -29,6 +35,7 @@ fn toggle_maximize_window(window: tauri::Window) -> bool {
 
     #[cfg(mobile)]
     {
+        let _ = window;
         false
     }
 }
@@ -61,6 +68,9 @@ pub fn run() {
             close_to_tray
         ])
         .setup(|app| {
+            #[cfg(not(desktop))]
+            let _ = app;
+
             #[cfg(desktop)]
             {
                 let show_i = MenuItem::with_id(

@@ -1,48 +1,45 @@
 # SirverChats multi-platform deployment
 
-SirverChats now has a native Flutter client in `native/` for Android,
-Windows, Linux, and Web. It shares one Dart UI/data layer and does not embed
-the React site in a WebView. The root React/Vite, Capacitor, and Tauri projects
-remain the legacy `0.4.3` line and are kept for existing installations and
-rollback.
+SirverChats uses the React/Vite client as the web UI and packages that same
+client with Tauri for Android, Windows, and Linux. The Tauri shells use the
+existing PocketBase/WebSocket/LiveKit integrations and do not require a
+separate UI implementation. The Flutter workspace in `native/` is retained as
+an experimental fallback and is not used for production web or release builds.
 
-## Local Flutter builds
+## Local Tauri builds
 
-From `native/`:
+From the repository root:
 
 ```sh
-flutter pub get
-dart run build_runner build
-flutter build web --release
-flutter build apk --release
-flutter build appbundle --release
-flutter build windows --release
-flutter build linux --release
-./tool/package-linux.sh 0.5.0
+npm ci
+npm run lint
+npm run test:unit
+npm run build
+npx tauri build
+npx tauri android build --ci --apk --aab
 ```
 
-Flutter Web output is `native/build/web`. Linux packaging produces a relocatable
-tarball and Debian package; CI additionally creates an AppImage when
-`appimagetool` is available. Android uses application ID
-`top.sirverdata.chat.native`; Windows and Linux use `top.sirverdata.desktop`.
+Tauri outputs desktop bundles under `src-tauri/target/release/bundle` and
+Android APK/AAB files under `src-tauri/gen/android/app/build/outputs`.
+The existing application identifier is preserved as `top.sirverdata.app` so
+installed users can upgrade without a package migration.
 
 ## GitHub Actions
 
-`native-ci.yml` runs formatting, analysis, unit/widget/integration tests, and
-Web/Android/Windows/Linux builds before packaging. `native-release.yml` adds
-release artifacts to GitHub Releases on `v*` tags. The legacy packaging
-workflows are manual-only and remain available under the `legacy-v*` tag.
+`native-ci.yml` runs TypeScript checks, unit tests, the React production build,
+API gateway tests, and Tauri Android/Windows/Linux builds before packaging.
+`native-release.yml` publishes Tauri release artifacts to GitHub Releases on
+`v*` tags. The old Capacitor/Flutter workflows remain only as source history;
+they are not used by production deployment.
 
 ## Cloudflare Pages
 
-The Pages workflow builds from `native/` and deploys `native/build/web` to the
-existing `sirverchats` project. `native/web/drift_worker.js` and
-`native/web/sqlite3.wasm` are shipped with the build so Drift can persist pages
-in IndexedDB. SPA fallback and cache headers are copied into the Flutter output
-by the workflow.
+The Pages workflow builds the root React app with `npm run build` and deploys
+`dist` to the existing `sirverchats` project. SPA fallback and cache headers
+are copied from `public/` by Vite.
 
-Attach `app.sirverdata.top` to Pages only after the native parity checks pass.
-The previous React deployment stays in Pages history for rollback.
+`app.sirverdata.top` is attached to the production Pages deployment. The
+Flutter deployment remains in Pages history for rollback if needed.
 
 Tag releases require the Android signing secrets documented in
 `native/README.md`; ordinary CI builds remain unsigned/debug-signed so pull
@@ -56,7 +53,7 @@ Deploy `backend/api-v2` on the home VPS with
 forward `/api/v2`, `/api/v2/ws`, and `/livekit/token` to `127.0.0.1:8080`.
 
 Set the Istanbul LiveKit token endpoint and internal shared secret only in
-`/etc/sirverchats/api-v2.env`. Never put LiveKit credentials in Flutter builds,
+`/etc/sirverchats/api-v2.env`. Never put LiveKit credentials in native builds,
 Cloudflare, or GitHub artifacts.
 
 Before production migration, stop PocketBase for a consistent `pb_data`/WAL/

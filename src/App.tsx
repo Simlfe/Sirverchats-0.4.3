@@ -205,7 +205,10 @@ export default function App() {
       setResetToken(initialToken);
     }
 
-    if (!isMobilePlatform()) return;
+    // Capacitor deep-link listeners are only needed by the legacy Capacitor
+    // shell. Tauri Android handles links through its own WebView/manifest and
+    // must not load the Capacitor bridge on startup.
+    if (!isMobilePlatform() || !(window as any).Capacitor?.isNativePlatform?.()) return;
     let capListener: any = null;
     let cancelled = false;
     loadCapacitorApp().then((CapApp) => {

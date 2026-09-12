@@ -207,7 +207,9 @@ export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
   channel: 'stable',
   githubOwner: 'Simlfe',
   repoPrefix: 'sirverchats',
-  enableLiveWebShell: true,
+  // Tauri packages always run the bundled React UI. Keep this opt-in for the
+  // diagnostic connection test, but never redirect native clients at startup.
+  enableLiveWebShell: false,
   liveWebUrl: 'https://app.sirverdata.top',
 };
 
