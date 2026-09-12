@@ -31,6 +31,8 @@ sudo install -d /etc/systemd/system/pocketbase.service.d /etc/systemd/system/cha
 sudo install -m 0644 deploy/pocketbase.service.d.conf /etc/systemd/system/pocketbase.service.d/override.conf
 sudo install -m 0644 deploy/chat.service.d.conf /etc/systemd/system/chat.service.d/override.conf
 sudo install -m 0644 deploy/cloudflared.service.d.conf /etc/systemd/system/cloudflared.service.d/override.conf
+sudo install -d /etc/systemd/system/pm2-sirver.service.d
+sudo install -m 0644 deploy/pm2-sirver.service.d.conf /etc/systemd/system/pm2-sirver.service.d/override.conf
 sudo install -m 0644 deploy/cloudflared-sirverchats.service /etc/systemd/system/cloudflared-sirverchats.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.service /etc/systemd/system/sirverchats-healthcheck.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.timer /etc/systemd/system/sirverchats-healthcheck.timer
