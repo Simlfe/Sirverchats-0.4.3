@@ -1943,7 +1943,7 @@ export default function App() {
   };
 
   const applyBootstrapData = (data: any) => {
-    if (!data || !currentUser?.id) return;
+    if (!data || !currentUser?.id || (data.user?.id && String(data.user.id) !== String(currentUser.id))) return;
     const serverList = Array.isArray(data.servers) ? data.servers as Server[] : [];
     const dmList = Array.isArray(data.dms) ? data.dms : [];
     const dmChannels = dmList
@@ -2075,7 +2075,7 @@ export default function App() {
     const currentActive = activeChannelRef.current;
     const isCurrentActiveInThisServer = currentActive && currentActive.server === serverId;
 
-    if (cachedList && cachedList.length > 0) {
+    if (cachedList && cachedList.length > 0 && activeServerRef.current?.id === serverId) {
       channelsCache.current[serverId] = cachedList;
       setChannels(cachedList);
       
@@ -2103,6 +2103,15 @@ export default function App() {
     if (apiV2Client.isCircuitOpen()) return;
     try {
       const list = await apiV2Client.getChannels(serverId);
+      // A server switch can happen while this request is in flight. Keep the
+      // fetched snapshot cached, but never let a stale response replace the
+      // visible channel list or active conversation for the newer server.
+      if (activeServerRef.current?.id !== serverId) {
+        channelsCache.current[serverId] = list;
+        channelCacheFreshnessRef.current[serverId] = Date.now();
+        offlineCacheService.saveChannels(serverId, list);
+        return;
+      }
       channelsCache.current[serverId] = list;
       channelCacheFreshnessRef.current[serverId] = Date.now();
       setChannels((prev) => {
@@ -2256,6 +2265,12 @@ export default function App() {
       return;
     }
 
+    // Single-flight all history requests for a conversation. The feed has
+    // both a scroll threshold and an IntersectionObserver, so either one can
+    // arrive before React commits the isLoadingMore state update.
+    if (messageLoadingRef.current.has(channelId)) return;
+    messageLoadingRef.current.add(channelId);
+
     const isDmChan = isDirectMessageChannel(targetChan);
     if (isDmChan) {
       const watchdogTimer = setTimeout(() => {
@@ -2269,8 +2284,6 @@ export default function App() {
       let targetUser = targetChan.recipientUser;
 
       try {
-        if (messageLoadingRef.current.has(channelId)) return;
-        messageLoadingRef.current.add(channelId);
         if (append && activeChannelRef.current?.id === channelId) setIsLoadingMore(true);
         if (!targetUser?.id && targetUsername) {
           const foundInDms = allDmChannels.find((c) => c.recipientUser?.username?.toLowerCase() === targetUsername.toLowerCase())?.recipientUser;
@@ -2478,6 +2491,7 @@ export default function App() {
       console.warn('Failed to load messages:', err);
       // Do NOT set setHasMoreMessages(false) on error so user can retry
     } finally {
+      messageLoadingRef.current.delete(channelId);
       if (activeChannelRef.current?.id === channelId) {
         setIsLoadingMore(false);
         setIsInitialLoadingChannel(false);
