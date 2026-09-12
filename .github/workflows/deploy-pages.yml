@@ -106,7 +106,7 @@ jobs:
             >/tmp/sirverchats-domain-create.json
           echo "Attached ${domain} to sirverchats"
 
-      - name: Inspect app DNS routing
+      - name: Route app DNS to Pages production
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         env:
           CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
@@ -119,6 +119,22 @@ jobs:
           [ -n "${zone_id}" ] || { echo 'sirverdata.top zone was not found' >&2; exit 1; }
           records_json="$(curl -fsS "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=app.sirverdata.top&per_page=100" "${auth[@]}")"
           printf '%s' "${records_json}" | jq '{records: [.result[]? | {id, type, name, proxied, ttl, points_to_pages: (.content == "sirverchats.pages.dev")}]}'
+          record_id="$(printf '%s' "${records_json}" | jq -r '.result[]? | select(.type == "CNAME") | .id' | head -n 1)"
+          if [ -n "${record_id}" ]; then
+            curl -fsS -X PUT "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" \
+              "${auth[@]}" \
+              --data '{"type":"CNAME","name":"app.sirverdata.top","content":"sirverchats.pages.dev","ttl":1,"proxied":true}' \
+              >/tmp/sirverchats-app-dns.json
+          elif [ "$(printf '%s' "${records_json}" | jq '.result | length')" = "0" ]; then
+            curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" \
+              "${auth[@]}" \
+              --data '{"type":"CNAME","name":"app.sirverdata.top","content":"sirverchats.pages.dev","ttl":1,"proxied":true}' \
+              >/tmp/sirverchats-app-dns.json
+          else
+            echo 'app.sirverdata.top has a non-CNAME DNS record; refusing to replace it automatically' >&2
+            exit 1
+          fi
+          echo 'app.sirverdata.top DNS now targets sirverchats.pages.dev'
 
       - name: Publish to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
@@ -142,9 +158,14 @@ jobs:
           project_json="$(curl -fsS "${api}" "${auth[@]}")"
           printf '%s' "${project_json}" | jq '{name: .result.name, subdomain: .result.subdomain, production_branch: .result.production_branch, latest_deployment: {id: .result.latest_deployment.id, url: .result.latest_deployment.url, environment: .result.latest_deployment.environment}}'
           curl -fsS "${api}/domains" "${auth[@]}" | jq '{domains: [.result[]? | {name, status}]}'
-          html="$(curl --retry 3 --retry-all-errors -fsS https://app.sirverdata.top/)"
-          if ! printf '%s' "${html}" | grep -q 'flutter_bootstrap.js'; then
-            echo 'app.sirverdata.top is not serving the Flutter production bootstrap' >&2
-            exit 1
-          fi
-          echo 'app.sirverdata.top is serving Flutter production assets'
+          for attempt in $(seq 1 12); do
+            html="$(curl --retry 3 --retry-all-errors -fsS https://app.sirverdata.top/)"
+            if printf '%s' "${html}" | grep -q 'flutter_bootstrap.js'; then
+              echo 'app.sirverdata.top is serving Flutter production assets'
+              exit 0
+            fi
+            echo "Waiting for Pages custom-domain activation (attempt ${attempt}/12)"
+            sleep 10
+          done
+          echo 'app.sirverdata.top is not serving the Flutter production bootstrap' >&2
+          exit 1
