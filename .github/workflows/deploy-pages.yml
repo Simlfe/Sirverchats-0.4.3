@@ -106,6 +106,20 @@ jobs:
             >/tmp/sirverchats-domain-create.json
           echo "Attached ${domain} to sirverchats"
 
+      - name: Inspect app DNS routing
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        env:
+          CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H 'Content-Type: application/json')
+          zone_json="$(curl -fsS "https://api.cloudflare.com/client/v4/zones?name=sirverdata.top&status=active" "${auth[@]}")"
+          zone_id="$(printf '%s' "${zone_json}" | jq -r '.result[0].id // empty')"
+          [ -n "${zone_id}" ] || { echo 'sirverdata.top zone was not found' >&2; exit 1; }
+          records_json="$(curl -fsS "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?name=app.sirverdata.top&per_page=100" "${auth[@]}")"
+          printf '%s' "${records_json}" | jq '{records: [.result[]? | {id, type, name, proxied, ttl, points_to_pages: (.content == "sirverchats.pages.dev")}]}'
+
       - name: Publish to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         uses: cloudflare/wrangler-action@v3
