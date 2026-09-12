@@ -43,21 +43,63 @@ jobs:
 
       - name: Ensure Cloudflare Pages project exists
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages project create sirverchats --production-branch=main
+        env:
+          CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects"
+          project_url="${api}/sirverchats"
+          status="$(curl -sS -o /tmp/sirverchats-project.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${project_url}")"
+          if [ "${status}" = "404" ]; then
+            curl -fsS -X POST "${api}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data '{"name":"sirverchats","production_branch":"main"}' \
+              >/tmp/sirverchats-project.json
+          elif [ "${status}" != "200" ]; then
+            echo "Cloudflare Pages project lookup failed with HTTP ${status}" >&2
+            exit 1
+          fi
 
-      - name: Ensure production custom domain is attached
+      - name: Attach app.sirverdata.top to the Flutter Pages project
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages domain add app.sirverdata.top --project-name=sirverchats
+        env:
+          CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects"
+          domain='app.sirverdata.top'
+          auth=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H 'Content-Type: application/json')
+          domains_json="$(curl -fsS "${api}/sirverchats/domains" "${auth[@]}")"
+          if printf '%s' "${domains_json}" | jq -e --arg domain "${domain}" '.result[]? | select(.name == $domain)' >/dev/null; then
+            echo "${domain} is already attached to sirverchats"
+            exit 0
+          fi
+
+          # If the old React Pages project owns the hostname, detach only that
+          # exact hostname so the rollback deployment remains available.
+          owner=''
+          while IFS= read -r candidate; do
+            [ -n "${candidate}" ] || continue
+            candidate_domains="$(curl -fsS "${api}/${candidate}/domains" "${auth[@]}")"
+            if printf '%s' "${candidate_domains}" | jq -e --arg domain "${domain}" '.result[]? | select(.name == $domain)' >/dev/null; then
+              owner="${candidate}"
+              break
+            fi
+          done < <(curl -fsS "${api}?per_page=100" "${auth[@]}" | jq -r '.result[]?.name')
+          if [ -n "${owner}" ] && [ "${owner}" != "sirverchats" ]; then
+            echo "Moving ${domain} from Pages project ${owner} to sirverchats"
+            curl -fsS -X DELETE "${api}/${owner}/domains/${domain}" "${auth[@]}" >/tmp/sirverchats-domain-delete.json
+          fi
+          curl -fsS -X POST "${api}/sirverchats/domains" "${auth[@]}" \
+            --data "{\"name\":\"${domain}\"}" \
+            >/tmp/sirverchats-domain-create.json
+          echo "Attached ${domain} to sirverchats"
 
       - name: Publish to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
