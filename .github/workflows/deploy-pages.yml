@@ -112,4 +112,6 @@ jobs:
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy native/build/web --project-name=sirverchats --branch=main
+          # This is a Direct Upload project. Omitting --branch promotes the
+          # upload to the production deployment used by the custom domain.
+          command: pages deploy native/build/web --project-name=sirverchats
