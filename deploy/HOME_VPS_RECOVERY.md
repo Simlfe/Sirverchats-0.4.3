@@ -33,10 +33,14 @@ sudo install -m 0644 deploy/chat.service.d.conf /etc/systemd/system/chat.service
 sudo install -m 0644 deploy/cloudflared.service.d.conf /etc/systemd/system/cloudflared.service.d/override.conf
 sudo install -d /etc/systemd/system/pm2-sirver.service.d
 sudo install -m 0644 deploy/pm2-sirver.service.d.conf /etc/systemd/system/pm2-sirver.service.d/override.conf
-sudo install -m 0644 deploy/cloudflared-sirverchats.service /etc/systemd/system/cloudflared-sirverchats.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.service /etc/systemd/system/sirverchats-healthcheck.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.timer /etc/systemd/system/sirverchats-healthcheck.timer
 ```
+
+Do not install `cloudflared-sirverchats.service` alongside an existing
+`cloudflared.service`: the checked-in unit is only a template for machines
+that do not already have a named-tunnel service. Preserve the installed
+service and its token, and use the drop-in above to harden it.
 
 Set `/etc/sirverchats/api-v2.env` so the gateway uses loopback PocketBase:
 
@@ -86,6 +90,10 @@ curl -i https://api.sirverdata.top/api/health
 curl -i https://chat.sirverdata.top/api/v2/health
 sudo systemctl --no-pager --full status pocketbase sirverchats-api-v2 cloudflared-sirverchats
 ```
+
+On this VPS the active tunnel unit is `cloudflared.service`; substitute that
+name for `cloudflared-sirverchats` in the final status command. A PM2-managed
+web process is covered by `pm2-sirver.service` when that unit is installed.
 
 For an authenticated bootstrap/message check, use a temporary smoke account
 and its normal PocketBase bearer token; do not put that token in logs or this
