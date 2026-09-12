@@ -11,6 +11,10 @@ const config = {
   // the loopback address; the environment variable remains configurable for
   // staging.
   pbBaseUrl: (process.env.POCKETBASE_URL || 'http://127.0.0.1:5000').replace(/\/+$/, ''),
+  // File URLs are returned to browsers and native clients, so they must be
+  // reachable from the client rather than pointing at the gateway's loopback
+  // interface. API reads still use pbBaseUrl above.
+  publicPbBaseUrl: (process.env.PUBLIC_POCKETBASE_URL || 'https://api.sirverdata.top').replace(/\/+$/, ''),
   livekitTokenUrl: process.env.LIVEKIT_TOKEN_SERVICE_URL || '',
   livekitInternalToken: process.env.LIVEKIT_INTERNAL_TOKEN || '',
   chatUpstreamWs: process.env.CHAT_UPSTREAM_WS || '',
@@ -46,7 +50,7 @@ function isSchemaCompatibilityError(error) {
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
-  if (/unknown field|no such field|field .* does not exist|missing field/.test(message)) return true;
+  if (/unknown field|no such field|field .* does not exist|missing field|unknown relation|relation .* not found|expand .* not found|failed to expand|cannot expand/.test(message)) return true;
   return /missing collection|no such collection|collection .* not found/.test(message) ||
     (error.status === 404 && Boolean(error.details?.collection));
 }
@@ -324,6 +328,21 @@ function participantIds(record) {
     .filter(Boolean);
 }
 
+/**
+ * Read DM records using the current normalized `users` relation. A small
+ * compatibility retry is kept for older installations that used separate
+ * user1/user2 relation fields; it is only reached for a confirmed schema
+ * error and never for a network/upstream failure.
+ */
+async function queryDmServerRecords(params, token) {
+  try {
+    return await queryCollection('private_chat_servers', { ...params, expand: 'users' }, token);
+  } catch (error) {
+    if (!isSchemaCompatibilityError(error)) throw error;
+    return queryCollection('private_chat_servers', { ...params, expand: 'user1,user2' }, token);
+  }
+}
+
 function userFromExpandedRecord(record, id) {
   const expanded = record?.expand || {};
   const candidates = [];
@@ -365,17 +384,36 @@ async function listDms(userId, token) {
   }
   const ids = [...new Set(memberships.map((membership) => membership.chat_server).filter(Boolean))];
   if (!ids.length) return [];
-  const records = await queryCollection('private_chat_servers', {
+  // Bootstrap primes DM access checks so the first history request does not
+  // add another membership round-trip.
+  ids.forEach((id) => accessCache.set(`dm:${userId}:${id}`, { value: true, expiresAt: Date.now() + 30_000 }));
+  const records = await queryDmServerRecords({
     filter: idsFilter('id', ids),
     perPage: String(ids.length),
     sort: '-updated',
-    expand: 'users,user1,user2',
   }, token);
   const counterpartIds = [...new Set(records.flatMap((record) => participantIds(record).filter((id) => id !== userId)))];
-  const userRecords = counterpartIds.length
-    ? await queryCollection('users', { filter: idsFilter('id', counterpartIds), perPage: String(counterpartIds.length) }, token)
-    : [];
-  const userById = new Map(userRecords.map((user) => [String(user.id), user]));
+  // PocketBase can expand the `users` relation in the same request. Reuse
+  // those profiles and only issue one batched lookup for any missing users.
+  const expandedUsers = records.flatMap((record) => {
+    const expand = record?.expand || {};
+    const values = [];
+    for (const key of ['users', 'user1', 'user2']) {
+      const value = expand[key];
+      if (Array.isArray(value)) values.push(...value);
+      else if (value) values.push(value);
+    }
+    return values;
+  }).filter((user) => user?.id);
+  const userById = new Map(expandedUsers.map((user) => [String(user.id), user]));
+  const missingCounterpartIds = counterpartIds.filter((id) => !userById.has(String(id)));
+  if (missingCounterpartIds.length) {
+    const userRecords = await queryCollection('users', {
+      filter: idsFilter('id', missingCounterpartIds),
+      perPage: String(missingCounterpartIds.length),
+    }, token);
+    userRecords.forEach((user) => userById.set(String(user.id), user));
+  }
   return records
     .map((record) => toDmSummary({ ...record, __currentUserId: userId }, userById))
     .filter(Boolean);
@@ -412,14 +450,41 @@ async function bootstrap(user, token, requestedServerId) {
 }
 
 async function findExistingDm(userId, recipientId, token) {
-  const pairFilter = `(user1 = "${escapeFilter(userId)}" && user2 = "${escapeFilter(recipientId)}") || (user1 = "${escapeFilter(recipientId)}" && user2 = "${escapeFilter(userId)}")`;
   try {
-    const result = await queryCollection('private_chat_servers', { filter: pairFilter, perPage: '1', expand: 'users,user1,user2' }, token);
-    return result[0] || null;
+    // The normalized membership table is the authoritative, indexed source
+    // for DM ownership. Only the current user's membership is needed: the
+    // candidate records contain the participant relation, avoiding a second
+    // membership query that may be hidden by PocketBase access rules.
+    const mine = await queryCollection('private_chat_members', {
+      filter: `user = "${escapeFilter(userId)}"`,
+      perPage: '200',
+    }, token);
+    const candidateIds = [...new Set(mine.map((membership) => String(membership.chat_server || '')).filter(Boolean))];
+    if (!candidateIds.length) return null;
+    const result = await queryDmServerRecords({
+      filter: idsFilter('id', candidateIds),
+      perPage: String(candidateIds.length),
+      sort: '-updated',
+    }, token);
+    return result.find((record) => participantIds(record).includes(String(recipientId))) || null;
   } catch (error) {
     if (!isSchemaCompatibilityError(error)) throw error;
-    const result = await queryCollection('private_chat_servers', { filter: `users ~ "${escapeFilter(userId)}"`, perPage: '200' }, token);
-    return result.find((record) => participantIds(record).includes(recipientId)) || null;
+    // Legacy fallback for installations without private_chat_members. Keep
+    // it schema-only so an outage never turns into a second slow scan.
+    let result;
+    try {
+      result = await queryDmServerRecords({
+        filter: `users ~ "${escapeFilter(userId)}"`,
+        perPage: '200',
+      }, token);
+    } catch (legacyError) {
+      if (!isSchemaCompatibilityError(legacyError)) throw legacyError;
+      result = await queryDmServerRecords({
+        filter: `user1 = "${escapeFilter(userId)}" || user2 = "${escapeFilter(userId)}"`,
+        perPage: '200',
+      }, token);
+    }
+    return result.find((record) => participantIds(record).includes(String(recipientId))) || null;
   }
 }
 
@@ -457,11 +522,27 @@ async function createOrGetDmUncached(userId, recipientId, token) {
 
   let record = await findExistingDm(userId, cleanRecipientId, token);
   if (!record) {
-    const created = await pbRequest(collectionPath('private_chat_servers'), {
+    // Production stores participants in the `users` multiselect relation;
+    // do not submit obsolete user1/user2 fields on the first attempt.
+    let created = await pbRequest(collectionPath('private_chat_servers'), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ users: [userId, cleanRecipientId], user1: userId, user2: cleanRecipientId, private_chat_options: {} }),
+      body: JSON.stringify({ users: [userId, cleanRecipientId], private_chat_options: {} }),
     });
+    if (!created.response.ok) {
+      const primaryError = new HttpError(
+        created.response.status,
+        created.data?.message || 'Unable to create direct message.',
+        { collection: 'private_chat_servers', data: created.data },
+      );
+      if (!isSchemaCompatibilityError(primaryError)) throw primaryError;
+      // Older deployments may expose only user1/user2 relations.
+      created = await pbRequest(collectionPath('private_chat_servers'), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user1: userId, user2: cleanRecipientId, private_chat_options: {} }),
+      });
+    }
     if (!created.response.ok || !created.data?.id) {
       throw new HttpError(created.response.status, created.data?.message || 'Unable to create direct message.');
     }
@@ -492,8 +573,26 @@ async function createOrGetDm(userId, recipientId, token) {
 
 function pbFileUrl(collection, recordId, filename, query = '') {
   if (!filename) return '';
-  if (/^(https?:|data:|blob:)/i.test(filename)) return filename;
-  return `${config.pbBaseUrl}/api/files/${encodeURIComponent(collection)}/${encodeURIComponent(recordId)}/${encodeURIComponent(filename)}${query ? `?${query}` : ''}`;
+  if (/^(https?:|data:|blob:)/i.test(filename)) {
+    // Never leak a loopback URL from an expanded PocketBase record. This is
+    // reachable by the gateway but not by a browser or native client.
+    if (/^https?:\/\/127\.0\.0\.1(?::\d+)?/i.test(filename) || /^https?:\/\/localhost(?::\d+)?/i.test(filename)) {
+      try {
+        const parsed = new URL(filename);
+        return `${config.publicPbBaseUrl}${parsed.pathname}${parsed.search || (query ? `?${query}` : '')}`;
+      } catch {
+        return filename;
+      }
+    }
+    return filename;
+  }
+  return `${config.publicPbBaseUrl}/api/files/${encodeURIComponent(collection)}/${encodeURIComponent(recordId)}/${encodeURIComponent(filename)}${query ? `?${query}` : ''}`;
+}
+
+function messageExpand(kind) {
+  return kind === 'dm'
+    ? 'user,sender,reply_to,private_attachments_via_message'
+    : 'sender,reply_to,attachments_via_message';
 }
 
 function normalizeAttachment(raw, collection) {
@@ -558,9 +657,6 @@ function normalizeMessage(record, kind, conversationId) {
 
 async function fetchMessagePage(kind, conversationId, query, token, userId) {
   const relation = kind === 'dm' ? 'chat_server' : 'channel';
-  const attachmentExpand = kind === 'dm'
-    ? 'private_attachments_via_message'
-    : 'attachments_via_message';
   if (kind === 'dm') await ensureDmAccess(conversationId, userId, token);
   else await ensureChannelAccess(conversationId, userId, token);
 
@@ -577,7 +673,10 @@ async function fetchMessagePage(kind, conversationId, query, token, userId) {
       sort: '-created,-id',
       perPage: String(requestedLimit + 1),
       page: '1',
-      expand: `user,sender,reply_to,${attachmentExpand}`,
+      // Public messages have a sender relation (not user); private messages
+      // retain both names. Requesting a non-existent expand path makes
+      // PocketBase reject the whole page on the production schema.
+      expand: messageExpand(kind),
     },
     token,
   );
@@ -611,14 +710,12 @@ async function createMessage(kind, conversationId, body, userId, token) {
   if (content.length > 20_000) throw new HttpError(413, 'Message content is too long.');
   const recordBody = {
     content,
-    user: userId,
-    ...(kind === 'dm' ? { chat_server: conversationId } : { channel: conversationId }),
+    ...(kind === 'dm'
+      ? { user: userId, sender: userId, chat_server: conversationId }
+      : { sender: userId, channel: conversationId }),
     ...(body.replyTo || body.reply_to ? { reply_to: body.replyTo || body.reply_to } : {}),
   };
-  const attachmentExpand = kind === 'dm'
-    ? 'private_attachments_via_message'
-    : 'attachments_via_message';
-  const result = await pbRequest(`${collectionPath(kind === 'dm' ? 'private_messages' : 'messages')}?expand=user,sender,reply_to,${attachmentExpand}`, {
+  const result = await pbRequest(`${collectionPath(kind === 'dm' ? 'private_messages' : 'messages')}?expand=${messageExpand(kind)}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(recordBody),
@@ -1155,6 +1252,11 @@ export {
   cursorForRecord,
   participantIds,
   toDmSummary,
+  messageExpand,
+  pbFileUrl,
+  listDms,
+  fetchMessagePage,
+  createMessage,
   normalizeMessage,
   normalizeUpstreamEvent,
   originForRequest,

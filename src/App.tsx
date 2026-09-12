@@ -1155,6 +1155,19 @@ export default function App() {
     if (!currentUser?.id) return;
     const userId = currentUser.id;
 
+    // Start the single gateway bootstrap before opening IndexedDB. A slow or
+    // blocked browser storage provider must never delay the online read path;
+    // cached DMs hydrate opportunistically while the network request runs.
+    let bootstrapApplied = false;
+    const bootstrapPromise = getBootstrapForCurrentUser()
+      .then((bootstrap) => {
+        bootstrapApplied = true;
+        applyBootstrapData(bootstrap);
+      })
+      .catch((err) => {
+        if (!(err instanceof GatewayError)) console.warn('Failed to load DM channels:', err);
+      });
+
     // 1. Instant sync load from in-memory / local cache for 0ms transition
     let cachedDms = inMemoryDmCacheRef.current.get(userId) || offlineCacheService.getDmChannelsSync(userId) || pbService.getCachedDmChannels(userId);
     if (cachedDms && cachedDms.length > 0) {
@@ -1171,7 +1184,7 @@ export default function App() {
       // 2. Fast load cached DM channels from IndexedDB if not in sync cache
       try {
         const idbCachedDms = await offlineCacheService.getDmChannels(userId);
-        if (idbCachedDms && idbCachedDms.length > 0) {
+        if (!bootstrapApplied && idbCachedDms && idbCachedDms.length > 0) {
           inMemoryDmCacheRef.current.set(userId, idbCachedDms);
           pbService.setCachedDmChannels(userId, idbCachedDms);
           const visible = idbCachedDms.filter(
@@ -1188,15 +1201,9 @@ export default function App() {
       }
     }
 
-    // 3. Share the single bootstrap request with server loading. The gateway
-    // batches counterpart profiles, so DM mode never performs one user query
-    // per conversation.
-    try {
-      const bootstrap = await getBootstrapForCurrentUser();
-      applyBootstrapData(bootstrap);
-    } catch (err) {
-      if (!(err instanceof GatewayError)) console.warn('Failed to load DM channels:', err);
-    }
+    // Keep the function awaitable for callers, while cache hydration above is
+    // allowed to finish independently of the network request.
+    await bootstrapPromise;
   };
 
   useEffect(() => {
@@ -2003,6 +2010,20 @@ export default function App() {
   };
 
   const loadServers = async () => {
+    // Start bootstrap immediately. IndexedDB can be slow on mobile/private
+    // browsing modes, so it must not sit in front of the online request.
+    let bootstrapApplied = false;
+    const bootstrapPromise = getBootstrapForCurrentUser()
+      .then((bootstrap) => {
+        bootstrapApplied = true;
+        applyBootstrapData(bootstrap);
+        if (Array.isArray(bootstrap.servers) && bootstrap.servers.length > 0) setShowDiscoveryCenter(false);
+        else setShowDiscoveryCenter(true);
+      })
+      .catch((err) => {
+        if (!(err instanceof GatewayError)) console.error('Failed to load servers:', err);
+      });
+
     // 1. Instantly display cached servers synchronously (0ms)
     if (currentUser?.id) {
       const syncServers = offlineCacheService.getServersSync(currentUser.id);
@@ -2018,7 +2039,7 @@ export default function App() {
         // Fallback to IndexedDB async lookup
         try {
           const cachedServers = await offlineCacheService.getServers(currentUser.id);
-          if (cachedServers && cachedServers.length > 0) {
+          if (!bootstrapApplied && cachedServers && cachedServers.length > 0) {
             setServers(cachedServers);
             if (!activeServerRef.current) {
               const savedServerId = localStorage.getItem('last_active_server_id');
@@ -2033,16 +2054,8 @@ export default function App() {
       }
     }
 
-    // 2. One background bootstrap request for servers, DMs, profiles, and the
-    // first server's channels. Cached data above remains visible if it fails.
-    try {
-      const bootstrap = await getBootstrapForCurrentUser();
-      applyBootstrapData(bootstrap);
-      if (Array.isArray(bootstrap.servers) && bootstrap.servers.length > 0) setShowDiscoveryCenter(false);
-      else setShowDiscoveryCenter(true);
-    } catch (err) {
-      if (!(err instanceof GatewayError)) console.error('Failed to load servers:', err);
-    }
+    // Preserve the existing await contract for join/discovery callers.
+    await bootstrapPromise;
   };
 
   const loadChannels = async (serverId: string) => {
@@ -2136,7 +2149,16 @@ export default function App() {
     messageRequestGenerationRef.current[channelId] = currentReqSeq;
     const isCurrentGeneration = () => messageRequestGenerationRef.current[channelId] === currentReqSeq;
     let canUseFreshCache = false;
-    const targetChan = activeChannelRef.current?.id === channelId ? activeChannelRef.current : channels.find((c) => c.id === channelId);
+    // Resolve the conversation from the request itself. Reading the current
+    // active channel later in this function is racy during fast server/DM
+    // switches and can send a stale request down the wrong collection path.
+    const targetChan = activeChannelRef.current?.id === channelId
+      ? activeChannelRef.current
+      : [...channels, ...allDmChannels].find((c) => c.id === channelId) || null;
+    // Every caller currently loads the active conversation. If a previous
+    // effect resumes after navigation, let its abort/generation guard finish
+    // without starting another network waterfall for an obsolete channel.
+    if (!targetChan || activeChannelRef.current?.id !== channelId) return;
     if (targetChan?.type === 'voice') {
       if (activeChannelRef.current?.id === channelId) {
         setMessages([]);
@@ -2145,10 +2167,10 @@ export default function App() {
       return;
     }
     if (!append && pageNum === 1) {
-      const isDm = channelId.startsWith('dm-') || channelId.startsWith('private-') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.name?.startsWith('@');
-      let targetUser = activeChannelRef.current?.recipientUser;
+      const isDm = isDirectMessageChannel(targetChan);
+      let targetUser = targetChan.recipientUser;
       if (!targetUser && isDm) {
-        const targetUsername = activeChannelRef.current?.name?.replace(/^@/, '');
+        const targetUsername = targetChan.name?.replace(/^@/, '');
         targetUser = allDmChannels.find(
           (c) =>
             c.id === channelId ||
@@ -2234,17 +2256,17 @@ export default function App() {
       return;
     }
 
-    const isDmChan = activeChannelRef.current?.name.startsWith('@') || activeChannelRef.current?.server === 'dm' || activeChannelRef.current?.id.startsWith('dm-') || activeChannelRef.current?.id.startsWith('private-') || activeServerRef.current?.name === 'Direct Messages' || activeServerRef.current?.name === 'الرسائل الخاصة';
-    if (isDmChan && activeChannelRef.current) {
+    const isDmChan = isDirectMessageChannel(targetChan);
+    if (isDmChan) {
       const watchdogTimer = setTimeout(() => {
         if (activeChannelRef.current?.id === channelId) {
           setIsInitialLoadingChannel(false);
           setIsLoadingMore(false);
         }
       }, 12000);
-      const targetUsername = activeChannelRef.current.name.replace(/^@/, '');
+      const targetUsername = targetChan.name.replace(/^@/, '');
       let chatServerId = channelId.startsWith('dm-server-') ? channelId.replace(/^dm-server-/, '') : undefined;
-      let targetUser = activeChannelRef.current.recipientUser;
+      let targetUser = targetChan.recipientUser;
 
       try {
         if (messageLoadingRef.current.has(channelId)) return;
@@ -2269,7 +2291,15 @@ export default function App() {
           ? (messageCursorRef.current[cacheKey] || (oldest?.created ? { created: oldest.created, id: oldest.id } : null) as MessageCursor | null)
           : undefined;
         const result = await apiV2Client.getMessages('dm', chatServerId, append ? 50 : 30, before || undefined);
-        const merged = await offlineCacheService.mergeChannelMessages(channelId, result.items, result.hasMore, pageNum);
+        // The gateway uses the PocketBase conversation ID, while the UI uses
+        // a prefixed channel ID to avoid collisions with public channels.
+        // Normalize once at the boundary so cache, realtime, unread badges,
+        // and active-channel matching all address the same conversation.
+        const dmItems = result.items.map((item) => ({
+          ...item,
+          channel: channelId,
+        }));
+        const merged = await offlineCacheService.mergeChannelMessages(channelId, dmItems, result.hasMore, pageNum);
         const cacheData = { items: merged.items, page: pageNum, hasMore: result.hasMore };
         const visibleWindow = selectActiveMessageWindow(merged.items, currentDataset, append);
         const hiddenOlderCache = Boolean(visibleWindow[0] && merged.items[0] && visibleWindow[0].id !== merged.items[0].id);

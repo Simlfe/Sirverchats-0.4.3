@@ -100,8 +100,21 @@ class ApiV2Client {
   }
 
   cancelAllMessageRequests(): void {
+    // Remove aborted entries immediately. Without this, a very fast
+    // switch-away/switch-back can receive the already-aborted promise from
+    // the in-flight dedupe map and leave the conversation waiting for its
+    // cleanup microtask instead of issuing the fresh request.
+    for (const [key, request] of this.inFlight) {
+      if (key.startsWith('messages:')) {
+        request.controller.abort();
+        this.inFlight.delete(key);
+      }
+    }
     for (const [key, controller] of this.requestControllers) {
-      if (key.startsWith('messages:')) controller.abort();
+      if (key.startsWith('messages:')) {
+        controller.abort();
+        this.requestControllers.delete(key);
+      }
     }
   }
 

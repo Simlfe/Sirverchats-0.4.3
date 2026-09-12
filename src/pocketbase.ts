@@ -2859,6 +2859,15 @@ class PocketBaseService {
       this.lastUsersFetch = Date.now();
       return this.usersCache;
     } catch (e) {
+      // A failed full-list request is usually an infrastructure problem. Do
+      // not immediately repeat it with another broad users query; preserve
+      // the warm cache and let the caller retry explicitly. Only a confirmed
+      // schema mismatch is eligible for the smaller compatibility page.
+      if (!isSchemaCompatibilityError(e)) {
+        if (this.usersCache) return this.usersCache;
+        console.warn('Failed to fetch users:', e);
+        return [];
+      }
       try {
         const pageRecords = await this.pb.collection('users').getList(1, 200, { requestKey: null });
         this.usersCache = pageRecords.items as any as User[];
@@ -3141,20 +3150,20 @@ class PocketBaseService {
         requestKey: null,
       });
       const ids = Array.from(new Set(memberships.map((membership: any) => membership.chat_server).filter(Boolean)));
-      if (ids.length > 0) {
-        const filter = ids.map((id) => `id = "${id}"`).join(' || ');
-        const normalized = await this.pb.collection('private_chat_servers').getFullList({ filter, requestKey: null });
-        normalized.forEach((s: any) => {
-          const users = s.users || [s.user1, s.user2].filter(Boolean);
-          const otherId = users.find((u: string) => u !== currentId) || users[0];
-          if (otherId) this.privateChatServerCache.set(otherId, s);
-          this.privateChatServerCache.set(s.id, s);
-        });
-        if (normalized.length > 0) {
-          try { localStorage.setItem(`cached_pcs_${currentId}`, JSON.stringify(normalized)); } catch (e) {}
-          return normalized;
-        }
-      }
+      // A successful membership query is authoritative even when it returns
+      // no rows. Do not fall through to an unindexed multiselect scan: that
+      // extra request was a common source of slow/duplicate DM loading.
+      if (ids.length === 0) return [];
+      const filter = ids.map((id) => `id = "${id}"`).join(' || ');
+      const normalized = await this.pb.collection('private_chat_servers').getFullList({ filter, requestKey: null });
+      normalized.forEach((s: any) => {
+        const users = s.users || [s.user1, s.user2].filter(Boolean);
+        const otherId = users.find((u: string) => u !== currentId) || users[0];
+        if (otherId) this.privateChatServerCache.set(otherId, s);
+        this.privateChatServerCache.set(s.id, s);
+      });
+      try { localStorage.setItem(`cached_pcs_${currentId}`, JSON.stringify(normalized)); } catch (e) {}
+      return normalized;
     } catch (membershipErr) {
       // Compatibility fallback is only valid when the normalized collection
       // is genuinely missing. Network, timeout, Cloudflare, and 5xx errors
@@ -3278,11 +3287,12 @@ class PocketBaseService {
       if (!isSchemaCompatibilityError(e)) throw e;
     }
 
-    // 2. Direct fast query to private_chat_servers with timeout
+    // 2. Direct fast query using the production `users` relation. Keep the
+    // old user1/user2 pair filter only as a schema-gated compatibility path.
     try {
       const directQuery = await withTimeout(
         this.pb.collection('private_chat_servers').getList(1, 10, {
-          filter: `(user1 = "${currentId}" && user2 = "${recipientId}") || (user1 = "${recipientId}" && user2 = "${currentId}")`,
+          filter: `users ~ "${currentId}" && users ~ "${recipientId}"`,
           requestKey: null
         }),
         3000
@@ -3294,6 +3304,18 @@ class PocketBaseService {
       }
     } catch (directErr) {
       if (!isSchemaCompatibilityError(directErr)) throw directErr;
+      const legacyQuery = await withTimeout(
+        this.pb.collection('private_chat_servers').getList(1, 10, {
+          filter: `(user1 = "${currentId}" && user2 = "${recipientId}") || (user1 = "${recipientId}" && user2 = "${currentId}")`,
+          requestKey: null
+        }),
+        3000,
+      );
+      if (legacyQuery.items && legacyQuery.items.length > 0) {
+        const s = legacyQuery.items[0];
+        this.setCachedPrivateChatServer(recipientId, s);
+        return s;
+      }
     }
 
     // 3. Fallback: check private_chat_members for current user
@@ -3335,18 +3357,34 @@ class PocketBaseService {
 
     // 4. Only if no existing server found, create a new server with timeout
     try {
-      const newChatServer = await withTimeout(
-        this.pb.collection('private_chat_servers').create(
-          {
-            users: [currentId, recipientId],
-            user1: currentId,
-            user2: recipientId,
-            private_chat_options: {}
-          },
-          { requestKey: null }
-        ),
-        5000
-      );
+      let newChatServer: any;
+      try {
+        newChatServer = await withTimeout(
+          this.pb.collection('private_chat_servers').create(
+            {
+              users: [currentId, recipientId],
+              private_chat_options: {}
+            },
+            { requestKey: null }
+          ),
+          5000
+        );
+      } catch (createErr) {
+        if (!isSchemaCompatibilityError(createErr)) throw createErr;
+        // Older deployments may only expose user1/user2. Keep this retry
+        // strictly schema-gated so outages never become a second write.
+        newChatServer = await withTimeout(
+          this.pb.collection('private_chat_servers').create(
+            {
+              user1: currentId,
+              user2: recipientId,
+              private_chat_options: {}
+            },
+            { requestKey: null },
+          ),
+          5000,
+        );
+      }
 
       this.setCachedPrivateChatServer(recipientId, newChatServer);
 
