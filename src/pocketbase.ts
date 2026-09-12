@@ -131,6 +131,22 @@ export function isSchemaCompatibilityError(error: any): boolean {
   return status === 404 && Boolean(details?.collection || /\/collections\/[^/]+\/records/.test(message));
 }
 
+/**
+ * A legacy caller asked PocketBase for history while the read backend was
+ * unavailable. Keeping this distinct from an empty page prevents callers
+ * from treating an outage as a successfully loaded conversation.
+ */
+export class MessagePageUnavailableError extends Error {
+  readonly code = 'message_unavailable';
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super('Message history is temporarily unavailable.');
+    this.name = 'MessagePageUnavailableError';
+    this.cause = cause;
+  }
+}
+
 export function getFileUrl(collection: string, recordId: string, filename: string, queryParams?: string): string {
   if (!filename) return '';
   if (filename.startsWith('data:') || filename.startsWith('blob:') || filename.startsWith('http')) {
@@ -1947,20 +1963,11 @@ class PocketBaseService {
         totalItems: result.items.length + (result.hasMore ? 1 : 0)
       };
     } catch (err) {
-      console.warn('Network error fetching messages, attempting offline cache fallback:', err);
-      try {
-        const cached = await offlineCacheService.getCachedMessages(channelId);
-        if (cached && Array.isArray(cached.items)) {
-          return {
-            items: cached.items,
-            totalPages: cached.hasMore ? cached.page + 1 : cached.page,
-            totalItems: cached.items.length
-          };
-        }
-      } catch (cacheErr) {
-        console.warn('Offline cache fallback error:', cacheErr);
-      }
-      return { items: [], totalPages: 1, totalItems: 0 };
+      // Do not turn an infrastructure failure into a successful empty page.
+      // The shared v2 read client owns cache-first/offline rendering; legacy
+      // callers receive a typed error and must preserve their current state.
+      console.warn('Network error fetching messages:', err);
+      throw new MessagePageUnavailableError(err);
     }
   }
 
