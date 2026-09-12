@@ -115,3 +115,22 @@ jobs:
           # This is a Direct Upload project. Omitting --branch promotes the
           # upload to the production deployment used by the custom domain.
           command: pages deploy native/build/web --project-name=sirverchats
+
+      - name: Verify production Pages hostname
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        env:
+          CF_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/sirverchats"
+          auth=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H 'Content-Type: application/json')
+          project_json="$(curl -fsS "${api}" "${auth[@]}")"
+          printf '%s' "${project_json}" | jq '{name: .result.name, subdomain: .result.subdomain, production_branch: .result.production_branch, latest_deployment: {id: .result.latest_deployment.id, url: .result.latest_deployment.url, environment: .result.latest_deployment.environment}}'
+          curl -fsS "${api}/domains" "${auth[@]}" | jq '{domains: [.result[]? | {name, status}]}'
+          html="$(curl --retry 3 --retry-all-errors -fsS https://app.sirverdata.top/)"
+          if ! printf '%s' "${html}" | grep -q 'flutter_bootstrap.js'; then
+            echo 'app.sirverdata.top is not serving the Flutter production bootstrap' >&2
+            exit 1
+          fi
+          echo 'app.sirverdata.top is serving Flutter production assets'
