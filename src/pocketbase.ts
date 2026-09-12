@@ -1418,6 +1418,7 @@ class PocketBaseService {
             return list;
           }
         } catch (e) {
+          if (!isSchemaCompatibilityError(e)) throw e;
           console.warn('Could not fetch public servers:', e);
         }
       }
@@ -1987,17 +1988,20 @@ class PocketBaseService {
       };
     }
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const record = await this.pb.collection('messages').getOne(messageId, {
+        expand: 'sender,reply_to,reply_to.sender,attachments_via_message'
+      });
+      return record as any as Message;
+    } catch (err: any) {
+      // A message can belong to the private collection, but only a confirmed
+      // public-record miss/schema mismatch may trigger that compatibility
+      // lookup. Network and upstream failures must fail immediately.
+      if (Number(err?.status) !== 404 && !isSchemaCompatibilityError(err)) throw err;
       try {
-        const record = await this.pb.collection('messages').getOne(messageId, {
-          expand: 'sender,reply_to,reply_to.sender,attachments_via_message'
+        const pmRecord = await this.pb.collection('private_messages').getOne(messageId, {
+          expand: 'sender,user,private_attachments_via_message,attachments_via_message'
         });
-        return record as any as Message;
-      } catch (err: any) {
-        try {
-          const pmRecord = await this.pb.collection('private_messages').getOne(messageId, {
-            expand: 'sender,user,private_attachments_via_message,attachments_via_message'
-          });
           const pubAtts = (pmRecord.expand as any)?.['attachments_via_message'] || (pmRecord.expand as any)?.['attachments(message)'] || [];
           const privAtts = (pmRecord.expand as any)?.['private_attachments_via_message'] || (pmRecord.expand as any)?.['private_attachments(message)'] || [];
           const combined = [...pubAtts, ...privAtts];
@@ -2008,18 +2012,12 @@ class PocketBaseService {
             (pmRecord.expand as any)['attachments(message)'] = combined;
             (pmRecord.expand as any)['private_attachments(message)'] = combined;
           }
-          return pmRecord as any as Message;
-        } catch (pmErr) {
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
-            continue;
-          }
-          console.warn('Failed to fetch message by id:', messageId, err);
-          throw err;
-        }
+        return pmRecord as any as Message;
+      } catch (pmErr) {
+        console.warn('Failed to fetch message by id:', messageId, pmErr);
+        throw pmErr;
       }
     }
-    throw new Error('Failed to fetch message by id: ' + messageId);
   }
 
   async touchMessage(messageId: string): Promise<void> {
@@ -2029,6 +2027,7 @@ class PocketBaseService {
         has_attachment: true
       });
     } catch (err) {
+      if (Number((err as any)?.status) !== 404 && !isSchemaCompatibilityError(err)) throw err;
       try {
         await this.pb.collection('private_messages').update(messageId, {
           has_attachment: true
@@ -3156,7 +3155,12 @@ class PocketBaseService {
           return normalized;
         }
       }
-    } catch (membershipErr) {}
+    } catch (membershipErr) {
+      // Compatibility fallback is only valid when the normalized collection
+      // is genuinely missing. Network, timeout, Cloudflare, and 5xx errors
+      // must reach the caller instead of starting another public request.
+      if (!isSchemaCompatibilityError(membershipErr)) throw membershipErr;
+    }
 
     // 2. Compatibility fallback for older installations without the
     // private_chat_members relation.
@@ -3167,12 +3171,14 @@ class PocketBaseService {
         requestKey: null
       });
     } catch (usersFilterErr) {
+      if (!isSchemaCompatibilityError(usersFilterErr)) throw usersFilterErr;
       try {
         list = await this.pb.collection('private_chat_servers').getFullList({
           filter: `user1 = "${currentId}" || user2 = "${currentId}"`,
           requestKey: null
         });
       } catch (userColumnsErr) {
+        if (!isSchemaCompatibilityError(userColumnsErr)) throw userColumnsErr;
         // Fall through to membership query strategy
       }
     }
@@ -3192,15 +3198,26 @@ class PocketBaseService {
 
     // 3. Parallel membership query fallback
     try {
-      const myMemberships = await this.pb.collection('private_chat_members').getFullList({
-        filter: `user = "${currentId}"`,
-        requestKey: null
-      }).catch(() => []);
+      let myMemberships: any[];
+      try {
+        myMemberships = await this.pb.collection('private_chat_members').getFullList({
+          filter: `user = "${currentId}"`,
+          requestKey: null
+        });
+      } catch (membershipErr) {
+        if (!isSchemaCompatibilityError(membershipErr)) throw membershipErr;
+        myMemberships = [];
+      }
       const serverIds = Array.from(new Set(myMemberships.map((m) => m.chat_server).filter(Boolean)));
       if (serverIds.length > 0) {
         const servers = await Promise.all(
           serverIds.map((id) =>
-            this.pb.collection('private_chat_servers').getOne(id, { requestKey: null }).catch(() => null)
+            this.pb.collection('private_chat_servers').getOne(id, { requestKey: null }).catch((error) => {
+              // A membership may point at a deleted conversation, but an
+              // infrastructure failure must not be hidden by this fallback.
+              if (Number(error?.status) === 404) return null;
+              throw error;
+            })
           )
         );
         const validServers = servers.filter(Boolean);
@@ -3218,7 +3235,9 @@ class PocketBaseService {
         }
       }
     } catch (e) {
-      // Graceful fallback
+      if (!isSchemaCompatibilityError(e)) throw e;
+      // Graceful fallback for an older installation without the normalized
+      // membership collection.
     }
 
     return [];
@@ -3239,7 +3258,7 @@ class PocketBaseService {
 
     // 1. Check current user's existing servers from getUserPrivateChatServers (which is cached and highly reliable)
     try {
-      const myServers = await withTimeout(this.getUserPrivateChatServers(), 3500, []);
+      const myServers = await withTimeout(this.getUserPrivateChatServers(), 3500);
       if (Array.isArray(myServers) && myServers.length > 0) {
         const found = myServers.find((s: any) => {
           const users = s.users || [s.user1, s.user2].filter(Boolean);
@@ -3255,7 +3274,9 @@ class PocketBaseService {
           return found;
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (!isSchemaCompatibilityError(e)) throw e;
+    }
 
     // 2. Direct fast query to private_chat_servers with timeout
     try {
@@ -3271,7 +3292,9 @@ class PocketBaseService {
         this.setCachedPrivateChatServer(recipientId, s);
         return s;
       }
-    } catch (directErr) {}
+    } catch (directErr) {
+      if (!isSchemaCompatibilityError(directErr)) throw directErr;
+    }
 
     // 3. Fallback: check private_chat_members for current user
     try {
@@ -3281,13 +3304,15 @@ class PocketBaseService {
           requestKey: null
         }),
         3000,
-        []
       );
       if (myMemberships.length > 0) {
         const serverIds = myMemberships.map((m: any) => m.chat_server).filter(Boolean);
         const serverChecks = await Promise.all(
           serverIds.slice(0, 15).map((sid: string) =>
-            this.pb.collection('private_chat_servers').getOne(sid, { requestKey: null }).catch(() => null)
+            this.pb.collection('private_chat_servers').getOne(sid, { requestKey: null }).catch((error) => {
+              if (Number(error?.status) === 404) return null;
+              throw error;
+            })
           )
         );
         const match = serverChecks.find((cs: any) => {
@@ -3304,7 +3329,9 @@ class PocketBaseService {
           return match;
         }
       }
-    } catch (memErr) {}
+    } catch (memErr) {
+      if (!isSchemaCompatibilityError(memErr)) throw memErr;
+    }
 
     // 4. Only if no existing server found, create a new server with timeout
     try {
@@ -3437,6 +3464,9 @@ class PocketBaseService {
         targetServerId = server?.id;
       } catch (e) {
         console.warn('Failed to resolve targetServerId within timeout:', e);
+        // A missing/slow backend is not an empty conversation. Let the
+        // caller preserve its cache and expose the unavailable state.
+        throw e;
       }
     }
 
@@ -3517,9 +3547,13 @@ class PocketBaseService {
               targetServerId = altServer.id;
               this.setCachedPrivateChatServer(recipientId, altServer);
             }
-          } catch (altErr) {}
+          } catch (altErr) {
+            if (!isSchemaCompatibilityError(altErr)) throw altErr;
+          }
         }
-      } catch (checkErr) {}
+      } catch (checkErr) {
+        if (!isSchemaCompatibilityError(checkErr)) throw checkErr;
+      }
     }
 
     // 5. Final server lookup fallback if targetServerId was completely missing
@@ -3539,7 +3573,9 @@ class PocketBaseService {
           );
           rawRecords = res.items || [];
         }
-      } catch (fallbackErr) {}
+      } catch (fallbackErr) {
+        if (!isSchemaCompatibilityError(fallbackErr)) throw fallbackErr;
+      }
     }
 
     // Fetch attachments in a single batch query for only messages that actually have attachments
@@ -3550,7 +3586,7 @@ class PocketBaseService {
         const attRecords = await this.pb.collection('private_attachments').getFullList({
           filter: idFilter,
           requestKey: null
-        }).catch(() => []);
+        });
         if (attRecords.length > 0) {
           const attsByMsg = new Map<string, any[]>();
           for (const att of attRecords) {
@@ -3567,7 +3603,9 @@ class PocketBaseService {
             }
           }
         }
-      } catch (attErr) {}
+      } catch (attErr) {
+        if (!isSchemaCompatibilityError(attErr)) throw attErr;
+      }
     }
 
     // Process and normalize raw records without discarding valid messages
