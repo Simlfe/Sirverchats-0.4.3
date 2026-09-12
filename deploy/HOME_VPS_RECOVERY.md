@@ -27,6 +27,10 @@ Cloudflare credentials:
 ```sh
 sudo install -m 0755 deploy/sirverchats-healthcheck.sh /usr/local/sbin/sirverchats-healthcheck.sh
 sudo install -m 0644 deploy/sirverchats-api-v2.service /etc/systemd/system/sirverchats-api-v2.service
+sudo install -d /etc/systemd/system/pocketbase.service.d /etc/systemd/system/chat.service.d /etc/systemd/system/cloudflared.service.d
+sudo install -m 0644 deploy/pocketbase.service.d.conf /etc/systemd/system/pocketbase.service.d/override.conf
+sudo install -m 0644 deploy/chat.service.d.conf /etc/systemd/system/chat.service.d/override.conf
+sudo install -m 0644 deploy/cloudflared.service.d.conf /etc/systemd/system/cloudflared.service.d/override.conf
 sudo install -m 0644 deploy/cloudflared-sirverchats.service /etc/systemd/system/cloudflared-sirverchats.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.service /etc/systemd/system/sirverchats-healthcheck.service
 sudo install -m 0644 deploy/sirverchats-healthcheck.timer /etc/systemd/system/sirverchats-healthcheck.timer
