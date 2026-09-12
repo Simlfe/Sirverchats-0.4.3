@@ -661,6 +661,7 @@ async function fetchMessagePage(kind, conversationId, query, token, userId) {
   else await ensureChannelAccess(conversationId, userId, token);
 
   const requestedLimit = Math.min(100, Math.max(1, Number.parseInt(query.get('limit') || '30', 10) || 30));
+  const searchText = String(query.get('search') || '').trim().slice(0, 500);
   const records = await queryCollection(
     kind === 'dm' ? 'private_messages' : 'messages',
     {
@@ -669,6 +670,7 @@ async function fetchMessagePage(kind, conversationId, query, token, userId) {
         conversationId,
         query.get('beforeCreated'),
         query.get('beforeId'),
+        searchText,
       ),
       sort: '-created,-id',
       perPage: String(requestedLimit + 1),
@@ -691,8 +693,9 @@ async function fetchMessagePage(kind, conversationId, query, token, userId) {
   };
 }
 
-function buildMessageFilter(relation, conversationId, beforeCreated, beforeId) {
+function buildMessageFilter(relation, conversationId, beforeCreated, beforeId, searchText = '') {
   const predicates = [`${relation} = "${escapeFilter(conversationId)}"`];
+  if (searchText) predicates.push(`content ~ "${escapeFilter(searchText)}"`);
   if (beforeCreated && beforeId) {
     const created = escapeFilter(beforeCreated.replace('T', ' '));
     predicates.push(

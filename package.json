@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
-    "test": "tsx tests/messagePagination.test.ts && tsx tests/apiV2Client.test.ts",
+    "test": "tsx tests/messagePagination.test.ts && tsx tests/messageSearch.test.ts && tsx tests/apiV2Client.test.ts",
     "test:unit": "npm run test",
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "preview": "vite preview",

@@ -51,6 +51,18 @@ test('normalizes Cloudflare 530 and opens the short circuit', async () => {
   assert.equal(calls, 1);
 });
 
+test('encodes the optional message search filter on the gateway read', async () => {
+  let requestedUrl = '';
+  globalThis.fetch = (async (input) => {
+    requestedUrl = String(input);
+    return jsonResponse(200, { items: [], nextCursor: null, hasMore: false });
+  }) as typeof fetch;
+
+  const client = new ApiV2Client('https://gateway.test', 100, 100);
+  await client.getMessages('channel', 'channel-1', 100, undefined, { search: 'café plans' });
+  assert.equal(new URL(requestedUrl).searchParams.get('search'), 'café plans');
+});
+
 test('times out an unresponsive read and keeps cancellation separate from outage state', async () => {
   globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
     init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });

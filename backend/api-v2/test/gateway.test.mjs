@@ -146,6 +146,7 @@ test('public message pages request only relations present on the production sche
     }
     if (url.pathname.includes('/messages/records')) {
       assert.equal(url.searchParams.get('expand'), 'sender,reply_to,attachments_via_message');
+      assert.match(url.searchParams.get('filter'), /content ~ "new"/);
       return new Response(JSON.stringify({ items: [
         { id: 'm2', channel: 'c1', sender: 'other', content: 'new', created: '2026-01-01 12:01:00.000Z' },
         { id: 'm1', channel: 'c1', sender: 'other', content: 'old', created: '2026-01-01 12:00:00.000Z' },
@@ -157,7 +158,7 @@ test('public message pages request only relations present on the production sche
     const page = await fetchMessagePage(
       'channel',
       'c1',
-      new URLSearchParams({ limit: '1' }),
+      new URLSearchParams({ limit: '1', search: 'new' }),
       'test-token',
       'me',
     );

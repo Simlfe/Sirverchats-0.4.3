@@ -21,6 +21,8 @@ export interface GatewayRequestOptions {
   bypassCircuit?: boolean;
   /** Requests sharing a key use one network promise. */
   dedupeKey?: string;
+  /** Optional server-side message text filter for search reads. */
+  search?: string;
 }
 
 export class GatewayError extends Error {
@@ -170,6 +172,9 @@ class ApiV2Client {
       params.set('beforeCreated', before.created);
       params.set('beforeId', before.id);
     }
+    if (options.search?.trim()) {
+      params.set('search', options.search.trim().slice(0, 500));
+    }
     const result = await this.request<MessagePage>(
       `/conversations/${kind}/${encodeURIComponent(conversationId)}/messages?${params.toString()}`,
       {
@@ -177,7 +182,7 @@ class ApiV2Client {
         // An older-page request must not be deduped with a different cursor.
         dedupeKey:
           options.dedupeKey ||
-          `messages:${kind}:${conversationId}:${before?.created || ''}:${before?.id || ''}:${limit}`,
+          `messages:${kind}:${conversationId}:${before?.created || ''}:${before?.id || ''}:${limit}:${options.search?.trim() || ''}`,
       },
     );
     return {

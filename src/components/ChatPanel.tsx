@@ -240,6 +240,7 @@ import NotificationsPopover from "./NotificationsPopover";
 import PinnedMessagesPopover from "./PinnedMessagesPopover";
 import MinimizedVoiceBar from "./MinimizedVoiceBar";
 import { toLatinNumerals } from "../lib/utils";
+import { messageMatchesParsedSearch, parseMessageSearchQuery } from "../lib/messageSearch";
 
 export interface StagedAttachment {
   id: string;
@@ -1036,13 +1037,18 @@ function ChatPanel({
     if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) void handleLoadMore();
+        // Searching is intentionally local to the loaded/cache window. Do
+        // not let the sentinel start an unbounded history waterfall while a
+        // user is typing; the explicit "load older" action remains available.
+        if (!channelSearchQuery.trim() && entries.some((entry) => entry.isIntersecting)) {
+          void handleLoadMore();
+        }
       },
       { root, rootMargin: '500px 0px 0px 0px', threshold: 0 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [channel.id, handleLoadMore]);
+  }, [channel.id, channelSearchQuery, handleLoadMore]);
 
   const preloadedMediaUrlsRef = useRef<Set<string>>(new Set());
   const preloadMediaForRangeRef = useRef<(startIdx: number, endIdx: number) => void>(() => {});
@@ -2406,14 +2412,14 @@ function ChatPanel({
   });
 
   useEffect(() => {
-    if (isActive && messages) {
-      const matching = messages.filter(
-        (m) => !m.channel || m.channel === channel.id,
-      );
-      if (matching.length > 0 || messages.length === 0) {
-        setDisplayedMessages(matching);
-      }
-    }
+    if (!isActive || !messages) return;
+    // The panel is kept mounted while navigating. Always replace the rendered
+    // source for the new conversation, including with an empty list, so a
+    // previous channel can never flash beneath a search or loading state.
+    const matching = messages.filter(
+      (m) => !m.channel || m.channel === channel.id,
+    );
+    setDisplayedMessages(matching);
   }, [isActive, messages, channel.id]);
 
   // Optimized chronological message sorting, search filtering, and deduplication
@@ -2477,14 +2483,10 @@ function ChatPanel({
     });
 
     if (channelSearchQuery.trim()) {
-      const q = channelSearchQuery.trim().toLowerCase();
-      sorted = sorted.filter((m) => {
-        if (m.content?.toLowerCase().includes(q)) return true;
-        if (m.expand?.sender?.display_name?.toLowerCase().includes(q))
-          return true;
-        if (m.expand?.sender?.username?.toLowerCase().includes(q)) return true;
-        return false;
-      });
+      const parsedSearch = parseMessageSearchQuery(channelSearchQuery);
+      sorted = sorted.filter((message) =>
+        messageMatchesParsedSearch(message, parsedSearch, { channel }),
+      );
     }
 
     return { sortedMessages: sorted, messageLookup: lookup };
@@ -3026,6 +3028,25 @@ function ChatPanel({
       true,
     );
   }, [channel.id, isActive, isInitialLoadReady, totalMessagesCount]);
+
+  // A filtered list can be shorter than the previous virtual window. Reset
+  // the window and show the newest matching rows so search can never leave a
+  // blank viewport at the old scroll offset.
+  const previousSearchQueryRef = useRef(channelSearchQuery);
+  useLayoutEffect(() => {
+    if (previousSearchQueryRef.current === channelSearchQuery) return;
+    previousSearchQueryRef.current = channelSearchQuery;
+    virtualRangeRef.current = {
+      startIndex: 0,
+      endIndex: VIRTUAL_MAX_ITEMS + VIRTUAL_OVERSCAN - 1,
+    };
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const targetTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    scrollEl.scrollTop = targetTop;
+    lastScrollTopRef.current = targetTop;
+    updateVirtualRangeRef.current(targetTop, scrollEl.clientHeight, true);
+  }, [channelSearchQuery]);
 
   // Changing the rendered window changes the height of the top spacer. Keep
   // the user's viewport anchored to the same message while that spacer moves.
@@ -4918,7 +4939,37 @@ function ChatPanel({
 
             {sortedMessages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-slate-500 gap-2 select-none w-full h-full">
-                {isInitialLoading || !isInitialLoadReady || isLoadingMore ? (
+                {channelSearchQuery.trim() ? (
+                  <>
+                    <Search className="w-8 h-8 opacity-40" aria-hidden="true" />
+                    <span className="text-sm italic font-medium text-center px-4">
+                      {lang === "ar"
+                        ? "لم يتم العثور على رسائل مطابقة في الرسائل المحملة."
+                        : "No matching messages in the loaded history."}
+                    </span>
+                    <div className="flex items-center gap-2 mt-1">
+                      {hasMoreMessages && (
+                        <button
+                          type="button"
+                          onClick={() => handleLoadMore()}
+                          disabled={isLoadingMore}
+                          className="px-3 py-1.5 rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] hover:bg-[var(--theme-bg-tertiary)] text-xs font-semibold text-[var(--theme-text-secondary)] disabled:opacity-50 cursor-pointer"
+                        >
+                          {isLoadingMore
+                            ? (lang === "ar" ? "جارٍ التحميل..." : "Loading older messages...")
+                            : (lang === "ar" ? "تحميل رسائل أقدم" : "Load older messages")}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setChannelSearchQuery("")}
+                        className="px-3 py-1.5 rounded-full bg-accent/10 hover:bg-accent/20 text-accent text-xs font-semibold cursor-pointer border border-accent/25"
+                      >
+                        {lang === "ar" ? "مسح البحث" : "Clear search"}
+                      </button>
+                    </div>
+                  </>
+                ) : isInitialLoading || !isInitialLoadReady || isLoadingMore ? (
                   <div className="w-full max-w-5xl mx-auto px-3 sm:px-6 py-6 flex flex-col gap-4.5 select-none pointer-events-none">
                     {/* Skeleton Date Divider */}
                     <div className="flex items-center gap-3 my-2 px-2">
@@ -8294,6 +8345,7 @@ function ChatPanel({
           serverChannels={serverChannels}
           currentUser={currentUser}
           onClose={() => setShowAdvancedSearchModal(false)}
+          cachedMessages={displayedMessages}
           onSelectMessage={(chanId, msgId) => {
             if (chanId === channel.id) {
               scrollToMessage(msgId);

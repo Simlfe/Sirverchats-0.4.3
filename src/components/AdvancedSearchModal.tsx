@@ -1,7 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Channel, Message, User, Server } from '../types';
 import { Search, X, Calendar, User as UserIcon, Hash, Filter, Image, FileText, ArrowRight, CornerDownRight } from 'lucide-react';
-import { pbService } from '../pocketbase';
+import { apiV2Client, GatewayError } from '../services/apiV2Client';
+import { messageMatchesFilters, parseMessageSearchQuery, type MessageSearchHas } from '../lib/messageSearch';
 
 interface AdvancedSearchModalProps {
   server: Server | null;
@@ -10,6 +11,8 @@ interface AdvancedSearchModalProps {
   currentUser: User;
   onClose: () => void;
   onSelectMessage: (channelId: string, messageId: string) => void;
+  /** Render the active conversation cache before remote search completes. */
+  cachedMessages?: Message[];
   lang?: 'en' | 'ar';
 }
 
@@ -20,6 +23,7 @@ export default function AdvancedSearchModal({
   currentUser,
   onClose,
   onSelectMessage,
+  cachedMessages = [],
   lang = 'en'
 }: AdvancedSearchModalProps) {
   const [query, setQuery] = useState('');
@@ -28,125 +32,123 @@ export default function AdvancedSearchModal({
   const [filterUser, setFilterUser] = useState<string>('');
   const [filterBefore, setFilterBefore] = useState<string>('');
   const [filterAfter, setFilterAfter] = useState<string>('');
-  const [filterHas, setFilterHas] = useState<'all' | 'file' | 'image' | 'link'>('all');
+  const [filterHas, setFilterHas] = useState<MessageSearchHas>('all');
 
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<Message[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchGenerationRef = useRef(0);
 
-  // Parse inline search tokens like `from:username`, `in:channel`, `before:YYYY-MM-DD`, `after:YYYY-MM-DD`
   useEffect(() => {
-    const handleSearch = async () => {
-      setIsLoading(true);
-      try {
-        let textQuery = query;
-        let fromUser = filterUser;
-        let inChan = searchScope === 'current' ? targetChannelId : '';
-        let beforeDate = filterBefore;
-        let afterDate = filterAfter;
-        let hasType = filterHas;
+    // ChatPanel stays mounted across navigation; keep the modal's current
+    // scope aligned with the newly selected conversation.
+    setTargetChannelId(currentChannel.id);
+  }, [currentChannel.id]);
 
-        // Parse query string tokens
-        const fromMatch = textQuery.match(/from:([^\s]+)/i);
-        if (fromMatch) {
-          fromUser = fromMatch[1];
-          textQuery = textQuery.replace(fromMatch[0], '').trim();
+  // Search through the same gateway read path as the chat feed. Results from
+  // the active cache render first, while channel reads run in parallel and
+  // obsolete query generations are cancelled/ignored.
+  useEffect(() => {
+    const generation = ++searchGenerationRef.current;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const parsed = parseMessageSearchQuery(query);
+      const allChannels = [currentChannel, ...serverChannels]
+        .filter((chan, index, list) => list.findIndex((candidate) => candidate.id === chan.id) === index);
+      const requestedChannel = parsed.inChannel
+        ? allChannels.find((chan) =>
+            chan.id === parsed.inChannel ||
+            chan.name.replace(/^#/, '').toLowerCase() === parsed.inChannel.toLowerCase(),
+          )
+        : null;
+      const invalidChannelToken = Boolean(parsed.inChannel && !requestedChannel);
+      const targetChannels = invalidChannelToken
+        ? []
+        : requestedChannel
+          ? [requestedChannel]
+          : searchScope === 'all_server'
+            ? allChannels.filter((chan) => chan.type === 'text')
+            : [allChannels.find((chan) => chan.id === targetChannelId) || currentChannel];
+      const filters = {
+        text: parsed.text,
+        from: filterUser.trim() || parsed.from,
+        before: filterBefore.trim() || parsed.before,
+        after: filterAfter.trim() || parsed.after,
+        has: filterHas === 'all' ? parsed.has : filterHas,
+      };
+      const resultMap = new Map<string, Message>();
+      const addMatches = (chan: Channel, items: Message[]) => {
+        for (const msg of items) {
+          if (msg.deleted || msg.deleted_at) continue;
+          if (!messageMatchesFilters(msg, { ...filters, inChannel: '' }, { channel: chan })) continue;
+          resultMap.set(`${chan.id}:${msg.id}`, { ...msg, channel: chan.id });
         }
+      };
 
-        const inMatch = textQuery.match(/in:([^\s]+)/i);
-        if (inMatch) {
-          const chanName = inMatch[1].replace('#', '');
-          const matchedChan = serverChannels.find((c) => c.name.toLowerCase() === chanName.toLowerCase() || c.id === chanName);
-          if (matchedChan) inChan = matchedChan.id;
-          textQuery = textQuery.replace(inMatch[0], '').trim();
-        }
-
-        const beforeMatch = textQuery.match(/before:([^\s]+)/i);
-        if (beforeMatch) {
-          beforeDate = beforeMatch[1];
-          textQuery = textQuery.replace(beforeMatch[0], '').trim();
-        }
-
-        const afterMatch = textQuery.match(/after:([^\s]+)/i);
-        if (afterMatch) {
-          afterDate = afterMatch[1];
-          textQuery = textQuery.replace(afterMatch[0], '').trim();
-        }
-
-        const hasMatch = textQuery.match(/has:(file|image|link|video)/i);
-        if (hasMatch) {
-          hasType = hasMatch[1] as any;
-          textQuery = textQuery.replace(hasMatch[0], '').trim();
-        }
-
-        const searchChannels = inChan
-          ? [serverChannels.find((c) => c.id === inChan) || currentChannel]
-          : (searchScope === 'all_server' && serverChannels.length > 0 ? serverChannels : [currentChannel]);
-
-        const allMatched: Message[] = [];
-
-        for (const chan of searchChannels) {
-          try {
-            const list = await pbService.fetchMessages(chan.id, 1, 100);
-            for (const msg of list.items) {
-              if (msg.deleted || msg.deleted_at) continue;
-
-              // Text query matching
-              if (textQuery.trim()) {
-                const qLower = textQuery.trim().toLowerCase();
-                const contentMatch = msg.content?.toLowerCase().includes(qLower);
-                if (!contentMatch) continue;
-              }
-
-              // From user matching
-              if (fromUser) {
-                const uLower = fromUser.toLowerCase();
-                const senderName = (msg.expand?.sender?.username || msg.expand?.sender?.display_name || '').toLowerCase();
-                if (!senderName.includes(uLower)) continue;
-              }
-
-              // Date filtering
-              if (beforeDate) {
-                const msgTime = new Date(msg.created).getTime();
-                const beforeTime = new Date(beforeDate).getTime();
-                if (!isNaN(beforeTime) && msgTime > beforeTime + 86400000) continue;
-              }
-
-              if (afterDate) {
-                const msgTime = new Date(msg.created).getTime();
-                const afterTime = new Date(afterDate).getTime();
-                if (!isNaN(afterTime) && msgTime < afterTime) continue;
-              }
-
-              // Media / Has filtering
-              if (hasType === 'file') {
-                const hasAttach = (msg.attachments && msg.attachments.length > 0) || (msg.expand?.attachments && msg.expand.attachments.length > 0);
-                if (!hasAttach) continue;
-              } else if (hasType === 'image') {
-                const hasImg = msg.attachments?.some((a: any) => typeof a === 'string' && /\.(jpg|jpeg|png|gif|webp)$/i.test(a)) ||
-                  msg.expand?.attachments?.some((a: any) => /\.(jpg|jpeg|png|gif|webp)$/i.test(a.file || ''));
-                if (!hasImg) continue;
-              } else if (hasType === 'link') {
-                const hasLink = /(https?:\/\/[^\s]+)/gi.test(msg.content || '');
-                if (!hasLink) continue;
-              }
-
-              allMatched.push({ ...msg, channel: chan.id });
-            }
-          } catch (e) {}
-        }
-
-        allMatched.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
-        setResults(allMatched.slice(0, 50));
-      } catch (err) {
-        console.warn('Advanced search error:', err);
-      } finally {
-        setIsLoading(false);
+      // Cache-first rendering keeps Advanced Search useful in offline/degraded
+      // mode and avoids replacing visible results with a spinner.
+      if (!invalidChannelToken && cachedMessages.length > 0) {
+        const currentTarget = targetChannels.find((chan) => chan.id === currentChannel.id);
+        if (currentTarget) addMatches(currentTarget, cachedMessages);
       }
-    };
+      setSearchError(invalidChannelToken ? 'The channel in the in: filter was not found.' : null);
+      setResults(Array.from(resultMap.values()).slice(0, 50));
+      setIsLoading(!invalidChannelToken && targetChannels.length > 0 && resultMap.size === 0);
 
-    const timer = setTimeout(handleSearch, 250);
-    return () => clearTimeout(timer);
-  }, [query, targetChannelId, searchScope, filterUser, filterBefore, filterAfter, filterHas, currentChannel.id, serverChannels]);
+      const runSearch = async () => {
+        if (invalidChannelToken || targetChannels.length === 0) {
+          if (generation === searchGenerationRef.current) setIsLoading(false);
+          return;
+        }
+
+        const responses = await Promise.allSettled(targetChannels.map(async (chan) => {
+          const isDm = chan.server === 'dm' || chan.id.startsWith('dm-') || chan.id.startsWith('private-') || chan.name.startsWith('@') || Boolean(chan.recipientUser);
+          const target = isDm
+            ? chan.id.startsWith('dm-server-')
+              ? { kind: 'dm' as const, id: chan.id.slice('dm-server-'.length) }
+              : chan.id.startsWith('private-')
+                ? { kind: 'dm' as const, id: chan.id.slice('private-'.length) }
+                : null
+            : { kind: 'channel' as const, id: chan.id };
+          if (!target) return { chan, items: [] as Message[] };
+          const page = await apiV2Client.getMessages(target.kind, target.id, 100, undefined, {
+            signal: controller.signal,
+            search: parsed.text || undefined,
+            dedupeKey: `search:${generation}:${target.kind}:${target.id}`,
+          });
+          return { chan, items: page.items };
+        }));
+
+        if (generation !== searchGenerationRef.current) return;
+        let failed = false;
+        responses.forEach((response) => {
+          if (response.status === 'fulfilled') addMatches(response.value.chan, response.value.items);
+          else if (!(response.reason instanceof GatewayError && response.reason.code === 'cancelled')) failed = true;
+        });
+        const sorted = Array.from(resultMap.values()).sort((a, b) => {
+          const time = Date.parse(b.created || '') - Date.parse(a.created || '');
+          return time || b.id.localeCompare(a.id);
+        });
+        setResults(sorted.slice(0, 50));
+        setSearchError(failed ? 'Some search sources are unavailable; showing cached results.' : null);
+        setIsLoading(false);
+      };
+
+      void runSearch().catch((error) => {
+        if (generation !== searchGenerationRef.current) return;
+        if (!(error instanceof GatewayError && error.code === 'cancelled')) {
+          console.warn('Advanced search error:', error);
+          setSearchError('Search is temporarily unavailable; showing cached results.');
+        }
+        setIsLoading(false);
+      });
+    }, 220);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, targetChannelId, searchScope, filterUser, filterBefore, filterAfter, filterHas, currentChannel.id, serverChannels, cachedMessages]);
 
   return (
     <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -267,6 +269,7 @@ export default function AdvancedSearchModal({
               <option value="all">{lang === 'ar' ? 'كل أنواع المحتوى' : 'All Content'}</option>
               <option value="file">{lang === 'ar' ? 'يحتوي على ملفات' : 'Has Files'}</option>
               <option value="image">{lang === 'ar' ? 'يحتوي على صور' : 'Has Images'}</option>
+              <option value="video">{lang === 'ar' ? 'يحتوي على فيديوهات' : 'Has Videos'}</option>
               <option value="link">{lang === 'ar' ? 'يحتوي على روابط' : 'Has Links'}</option>
             </select>
           </div>
@@ -274,6 +277,11 @@ export default function AdvancedSearchModal({
 
         {/* Results List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2.5 hover-scrollbar min-h-[300px]">
+          {searchError && (
+            <div className="mb-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {searchError}
+            </div>
+          )}
           {isLoading ? (
             <div className="py-12 text-center text-[var(--theme-text-muted)] text-sm animate-pulse">
               {lang === 'ar' ? 'جارٍ البحث...' : 'Searching...'}
@@ -286,8 +294,15 @@ export default function AdvancedSearchModal({
           ) : (
             results.map((msg) => {
               const matchedChan = serverChannels.find((c) => c.id === msg.channel) || currentChannel;
-              const sender = msg.expand?.sender;
+              const sender = msg.expand?.sender || (typeof (msg as any).sender === 'object' ? (msg as any).sender : undefined);
               const senderName = sender?.display_name || sender?.username || 'User';
+              const attachmentCount = [
+                msg.attachments,
+                msg.expand?.attachments_via_message,
+                msg.expand?.private_attachments_via_message,
+                msg.expand?.attachments,
+                msg.expand?.private_attachments,
+              ].reduce((count, items) => count + (Array.isArray(items) ? items.length : 0), 0);
 
               return (
                 <div
@@ -301,7 +316,7 @@ export default function AdvancedSearchModal({
                   <div className="flex items-center justify-between text-xs text-[var(--theme-text-muted)]">
                     <div className="flex items-center gap-2 font-bold">
                       <span className="text-[var(--theme-text-primary)] font-extrabold">{senderName}</span>
-                      <span className="text-[10px] text-[var(--theme-text-muted)]">@{sender?.username}</span>
+                      {sender?.username && <span className="text-[10px] text-[var(--theme-text-muted)]">@{sender.username}</span>}
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--theme-bg-secondary)] border border-[var(--theme-border)] text-accent font-mono">
                         #{matchedChan.name}
                       </span>
@@ -312,7 +327,7 @@ export default function AdvancedSearchModal({
                   </div>
 
                   <p className="text-xs text-[var(--theme-text-secondary)] line-clamp-2 leading-relaxed break-words font-medium">
-                    {msg.content || (msg.attachments && msg.attachments.length > 0 ? (lang === 'ar' ? '📎 [مرفق]' : '📎 [Attachment]') : '')}
+                    {msg.content || (attachmentCount > 0 ? (lang === 'ar' ? '📎 [مرفق]' : '📎 [Attachment]') : '')}
                   </p>
 
                   <div className="flex items-center justify-end gap-1 text-[10px] text-accent opacity-0 group-hover:opacity-100 transition-opacity font-bold">
