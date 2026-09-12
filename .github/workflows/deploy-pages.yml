@@ -64,6 +64,11 @@ jobs:
             echo "Cloudflare Pages project lookup failed with HTTP ${status}" >&2
             exit 1
           fi
+          curl -fsS -X PATCH "${project_url}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data '{"production_branch":"main"}' \
+            >/tmp/sirverchats-project.json
 
       - name: Attach app.sirverdata.top to the Flutter Pages project
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
