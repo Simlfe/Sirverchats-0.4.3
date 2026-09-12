@@ -1,0 +1,23 @@
+[Unit]
+Description=SirverChats API v2 gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sirver
+WorkingDirectory=/home/sirver/sirver-app-repo/backend/api-v2
+EnvironmentFile=/etc/sirverchats/api-v2.env
+ExecStart=/usr/bin/node server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# The checkout lives under /home/sirver. Keep all other home directories
+# protected while allowing this service to read its code and environment.
+ProtectHome=read-only
+ReadWritePaths=/home/sirver/sirver-app-repo/backend/api-v2
+
+[Install]
+WantedBy=multi-user.target

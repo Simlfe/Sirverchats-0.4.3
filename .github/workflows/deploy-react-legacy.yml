@@ -1,0 +1,53 @@
+name: Deploy legacy React web app (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Cloudflare Pages project used for the legacy 0.4.x rollback
+        required: false
+        default: sirverchats-legacy
+
+jobs:
+  deploy:
+    name: Build and publish legacy React fallback
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      LEGACY_PROJECT: ${{ inputs.project }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build legacy React app
+        run: npm run build
+
+      - name: Verify legacy bundle budget
+        run: npm run check:bundle
+
+      - name: Ensure legacy Pages project exists
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create ${{ env.LEGACY_PROJECT }} --production-branch=main
+
+      - name: Publish legacy React fallback
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ env.LEGACY_PROJECT }}

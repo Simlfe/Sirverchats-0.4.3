@@ -1,5 +1,19 @@
 # Sirver Application Changelog
 
+## [Unreleased] - 2026-09-12
+### Native Flutter 0.5.0 migration
+- Added the `/native` Flutter client for Android, Windows, Linux, and Web with
+  shared adaptive UI, Riverpod state, Dio REST, one authenticated WebSocket,
+  Drift/IndexedDB caching, LiveKit calls, attachments, notifications, and
+  persisted drafts/scroll positions.
+- Added the versioned `backend/api-v2` gateway, CORS-safe Nginx/systemd
+  deployment fragments, cursor-paginated message/DM endpoints, normalized
+  realtime events, and lifecycle-only call persistence.
+- Added native quality/build/release automation, Flutter Web Pages deployment
+  configuration, Linux package tooling, bundle-baseline checks, and migration
+  documentation. React/Capacitor/Tauri workflows remain available manually as
+  the legacy 0.4.x line.
+
 ## [Unreleased] - 2026-09-11
 ### Performance & Reliability
 - Fixed the ChatPanel initial-load race so a missing scroll ref cannot leave a conversation permanently hidden behind the loading overlay; added a bounded safety timeout.
@@ -10,8 +24,8 @@
 - Replaced fixed-size DM/server history with a shared `(created,id)` cursor contract, 30-message initial loads, 50-message older pages, per-conversation request generations, and cache-safe anchored prepends.
 - Removed destructive 150-message offline trims, realtime create double-fetches, server-wide ping history scans, calls-table voice polling, and no-op notification writes.
 - Switched feed media preloading to four nearby thumbnails, kept cached content visible during refresh, and removed channel-keyed ChatPanel remounts that caused blank navigation frames.
-- Added PocketBase performance indexes in `pb_migrations/202609120001_performance_indexes.js`, pinned the compatible JavaScript SDK to 0.21.5, and added cursor tests plus a 300 KiB initial-JavaScript CI budget.
-- Added Cloudflare Pages SPA redirects/cache headers and an optional deployment workflow for `app.sirverdata.top`; LiveKit and native/Tauri code remain deferred until needed.
+- Added PocketBase performance indexes in `pb_migrations/202609120002_performance_indexes.js`, pinned the compatible JavaScript SDK to 0.21.5, and added cursor tests plus a 300 KiB initial-JavaScript CI budget.
+- Added Cloudflare Pages SPA redirects/cache headers and an optional deployment workflow for `app.sirverdata.top`; the React/Capacitor/Tauri implementation remains the legacy fallback while the native Flutter line is validated.
 
 ## [0.4.5] - 2026-09-11
 ### Performance: Deep Performance Audit & Main-Thread Unblocking

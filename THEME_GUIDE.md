@@ -19,6 +19,16 @@ This document details the centralized theme system implemented across the **Sirv
 - **Theme Switcher Component**: `/src/components/ThemeToggle.tsx`
   - A reusable toggle control featuring smooth spring animations and theme status indicators.
 
+### Flutter native client
+
+The `/native` workspace follows the same visual language while using Flutter
+Material 3 tokens. The shared accent is Avocado Green `#7BAE37`; surfaces and
+text switch between Material light/dark color schemes from the persisted theme
+preference. Keep adaptive navigation, cached-first content, and localized
+loading states consistent across Android, Windows, Linux, and Web. React CSS
+tokens remain authoritative for the legacy 0.4.x client; native changes should
+be mirrored conceptually rather than introducing a second brand palette.
+
 ---
 
 ## 2. How Dark & Light Mode Works

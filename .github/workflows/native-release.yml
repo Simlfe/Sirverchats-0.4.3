@@ -1,0 +1,186 @@
+name: Publish native Flutter release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.44.6'
+
+jobs:
+  web:
+    name: Release Flutter Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build web --release
+      - name: Add Pages metadata
+        working-directory: .
+        run: |
+          cp native/web/_redirects native/build/web/_redirects
+          cp native/web/_headers native/build/web/_headers
+      - name: Check compressed baseline
+        working-directory: .
+        run: |
+          export FLUTTER_WEB_BASELINE_KIB="$(cat native/tool/flutter_web_baseline_kib)"
+          node native/tool/check_web_bundle.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sirverchats-native-web
+          path: native/build/web
+          if-no-files-found: error
+
+  android:
+    name: Release Android APK and AAB
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      FIREBASE_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Require Android signing secrets
+        shell: bash
+        run: |
+          for value in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD FIREBASE_GOOGLE_SERVICES_JSON_BASE64; do
+            if [[ -z "${!value}" ]]; then
+              echo "Missing required release secret: ${value}" >&2
+              exit 1
+            fi
+          done
+      - name: Configure Android signing
+        shell: bash
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
+          {
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'storeFile=upload-keystore.jks\n'
+          } > android/key.properties
+          printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android/app/google-services.json
+      - run: flutter pub get
+      - run: flutter build apk --release --build-name=0.5.0 --build-number=${{ github.run_number }}
+      - run: flutter build appbundle --release --build-name=0.5.0 --build-number=${{ github.run_number }}
+      - name: Rename signed Android artifacts
+        shell: bash
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk "build/sirverchats-${GITHUB_REF_NAME}-android.apk"
+          cp build/app/outputs/bundle/release/app-release.aab "build/sirverchats-${GITHUB_REF_NAME}-android.aab"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sirverchats-native-android
+          path: |
+            native/build/sirverchats-${{ github.ref_name }}-android.apk
+            native/build/sirverchats-${{ github.ref_name }}-android.aab
+          if-no-files-found: error
+
+  windows:
+    name: Release Windows desktop
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release --build-name=0.5.0 --build-number=${{ github.run_number }}
+      - name: Archive Windows release
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "build/sirverchats-${{ github.ref_name }}-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sirverchats-native-windows
+          path: native/build/sirverchats-${{ github.ref_name }}-windows-x64.zip
+          if-no-files-found: error
+
+  linux:
+    name: Release Linux AppImage, deb, and archive
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Linux build and packaging dependencies
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libstdc++-12-dev libfuse2t64 squashfs-tools dpkg-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build linux --release --build-name=0.5.0 --build-number=${{ github.run_number }}
+      - name: Install AppImage tool
+        working-directory: .
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            --output "$RUNNER_TEMP/appimagetool"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+      - name: Package Linux release
+        working-directory: .
+        env:
+          APPIMAGETOOL: ${{ runner.temp }}/appimagetool
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: bash native/tool/package-linux.sh "${GITHUB_REF_NAME#v}"
+      - name: Prefix release filenames
+        working-directory: .
+        run: |
+          mkdir -p native/build/linux/release-assets
+          cp native/build/linux/packages/* native/build/linux/release-assets/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sirverchats-native-linux
+          path: native/build/linux/release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [web, android, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        run: sha256sum $(find release-assets -type f -not -name SHA256SUMS -print) > release-assets/SHA256SUMS
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/**

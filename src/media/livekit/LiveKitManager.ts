@@ -219,6 +219,7 @@ export class LiveKitManager {
     const endpointsToTry = useRelativeProxy ? ['/livekit/token', defaultEndpoint] : [defaultEndpoint];
 
     let lastError: Error | null = null;
+    const accessToken = pbService.getPbInstance().authStore.token;
 
     for (const endpoint of endpointsToTry) {
       console.log(`[LiveKitManager] Requesting LiveKit token for identity: "${identity}", name: "${name}", room: "${roomName}" at endpoint: ${endpoint}`);
@@ -228,6 +229,7 @@ export class LiveKitManager {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
           },
           body: JSON.stringify({
             identity,

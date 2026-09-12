@@ -1,0 +1,5 @@
+# Copy to android/key.properties for a signed release. Never commit the copy.
+storePassword=replace-with-keystore-password
+keyPassword=replace-with-key-password
+keyAlias=sirverdata
+storeFile=upload-keystore.jks
