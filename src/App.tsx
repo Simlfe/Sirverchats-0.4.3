@@ -2345,7 +2345,12 @@ export default function App() {
           setIsInitialLoadingChannel(false);
         }
       } catch (error) {
-        console.warn('Error loading direct messages:', error);
+        // A navigation can legitimately abort the previous conversation's
+        // request. It is not a backend failure and should not pollute the
+        // console (or make a healthy switch look broken in diagnostics).
+        if (!(error instanceof GatewayError && error.code === 'cancelled')) {
+          console.warn('Error loading direct messages:', error);
+        }
       } finally {
         messageLoadingRef.current.delete(channelId);
         clearTimeout(watchdogTimer);
@@ -2497,7 +2502,11 @@ export default function App() {
         setMessagesPage(pageNum);
       }
     } catch (err) {
-      console.warn('Failed to load messages:', err);
+      // Obsolete reads are cancelled when the user changes conversation; only
+      // surface real gateway/database failures to diagnostics.
+      if (!(err instanceof GatewayError && err.code === 'cancelled')) {
+        console.warn('Failed to load messages:', err);
+      }
       // Do NOT set setHasMoreMessages(false) on error so user can retry
     } finally {
       messageLoadingRef.current.delete(channelId);
