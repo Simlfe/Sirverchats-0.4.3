@@ -31,6 +31,7 @@ const tokenCache = new Map();
 const pendingTokenValidations = new Map();
 const pendingDmCreations = new Map();
 const accessCache = new Map();
+const channelServerCache = new Map();
 const clients = new Set();
 const recentMessageEvents = new Map();
 const recentCallEvents = new Map();
@@ -273,13 +274,19 @@ async function findServerMembership(userId, serverId, token) {
 }
 
 async function ensureChannelAccess(channelId, userId, token) {
-  const channels = await queryCollection('channels', { filter: `id = "${escapeFilter(channelId)}"`, perPage: '1' }, token);
-  const channel = channels[0];
-  if (!channel) throw new HttpError(404, 'Channel not found.');
-  if (!(await findServerMembership(userId, channel.server, token))) {
+  const cached = channelServerCache.get(channelId);
+  let serverId = cached?.expiresAt > Date.now() ? cached.serverId : '';
+  if (!serverId) {
+    const channels = await queryCollection('channels', { filter: `id = "${escapeFilter(channelId)}"`, perPage: '1' }, token);
+    const channel = channels[0];
+    if (!channel) throw new HttpError(404, 'Channel not found.');
+    serverId = channel.server;
+    channelServerCache.set(channelId, { serverId, expiresAt: Date.now() + 60_000 });
+  }
+  if (!(await findServerMembership(userId, serverId, token))) {
     throw new HttpError(403, 'You are not a member of this server.');
   }
-  return channel;
+  return { id: channelId, server: serverId };
 }
 
 async function ensureDmAccess(chatServerId, userId, token) {
@@ -423,11 +430,16 @@ async function listChannelsForUser(serverId, userId, token) {
   if (!(await findServerMembership(userId, serverId, token))) {
     throw new HttpError(403, 'You are not a member of this server.');
   }
-  return queryCollection('channels', {
+  const channels = await queryCollection('channels', {
     filter: `server = "${escapeFilter(serverId)}"`,
     sort: 'position,created',
     perPage: '200',
   }, token);
+  const expiresAt = Date.now() + 60_000;
+  channels.forEach((channel) => {
+    if (channel?.id) channelServerCache.set(channel.id, { serverId, expiresAt });
+  });
+  return channels;
 }
 
 async function bootstrap(user, token, requestedServerId) {
@@ -1258,6 +1270,7 @@ export {
   messageExpand,
   pbFileUrl,
   listDms,
+  listChannelsForUser,
   fetchMessagePage,
   createMessage,
   normalizeMessage,

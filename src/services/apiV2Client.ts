@@ -13,10 +13,17 @@ import type {
 import { pbService } from '../pocketbase';
 
 const REQUEST_TIMEOUT_MS = 3_000;
+// Message pages can legitimately take longer than the lightweight bootstrap
+// reads while PocketBase expands senders and attachments. Keep the general
+// outage deadline short, but do not abort a healthy history response at the
+// exact moment it is about to arrive.
+const MESSAGE_REQUEST_TIMEOUT_MS = 7_500;
 const CIRCUIT_BREAKER_MS = 10_000;
 
 export interface GatewayRequestOptions {
   signal?: AbortSignal;
+  /** Override the request deadline for a heavier endpoint. */
+  timeoutMs?: number;
   /** Bypass the short circuit after a user explicitly requests a retry. */
   bypassCircuit?: boolean;
   /** Requests sharing a key use one network promise. */
@@ -69,6 +76,7 @@ type InFlightRequest<T> = {
 class ApiV2Client {
   private readonly baseUrl: string;
   private readonly requestTimeoutMs: number;
+  private readonly messageRequestTimeoutMs: number;
   private readonly circuitBreakerMs: number;
   private readonly inFlight = new Map<string, InFlightRequest<unknown>>();
   private readonly requestControllers = new Map<string, AbortController>();
@@ -81,9 +89,11 @@ class ApiV2Client {
     baseUrl = ENDPOINTS.API_V2_BASE_URL,
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
     circuitBreakerMs = CIRCUIT_BREAKER_MS,
+    messageRequestTimeoutMs = Math.max(requestTimeoutMs, MESSAGE_REQUEST_TIMEOUT_MS),
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.requestTimeoutMs = requestTimeoutMs;
+    this.messageRequestTimeoutMs = messageRequestTimeoutMs;
     this.circuitBreakerMs = circuitBreakerMs;
   }
 
@@ -207,6 +217,7 @@ class ApiV2Client {
       `/conversations/${kind}/${encodeURIComponent(conversationId)}/messages?${params.toString()}`,
       {
         ...options,
+        timeoutMs: options.timeoutMs || this.messageRequestTimeoutMs,
         // An older-page request must not be deduped with a different cursor.
         dedupeKey:
           options.dedupeKey ||
@@ -277,10 +288,11 @@ class ApiV2Client {
     while (true) {
       const controller = parentController;
       let timedOut = false;
+      const timeoutMs = options.timeoutMs || this.requestTimeoutMs;
       const timeoutId = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       const abortExternal = () => controller.abort();
       if (externalSignal) {
         if (externalSignal.aborted) controller.abort();

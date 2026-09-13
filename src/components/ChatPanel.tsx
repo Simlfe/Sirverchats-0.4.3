@@ -1859,18 +1859,31 @@ function ChatPanel({
         setAllUsersList((prev) => (prev.length === 0 ? cUsers : prev));
       }
 
-      // Non-blocking parallel background sync with independent progressive updates
-      pbService.fetchServerRoles(sId).then((rList) => {
-        if (rList && rList.length > 0) setServerRoles(rList);
-      }).catch(() => {});
+      // The server member records already expand their user profiles. Loading
+      // every account in the installation here created a broad PocketBase
+      // query on every chat mount and competed with the message page that the
+      // user is waiting for. Fetch the small server-scoped directory instead,
+      // reuse the role result, and merge its expanded users into the lookup.
+      const rList = await pbService.fetchServerRoles(sId).catch(() => []);
+      if (rList.length > 0) setServerRoles(rList);
 
-      pbService.fetchServerMembers(sId).then((mList) => {
-        if (mList && mList.length > 0) setServerMembers(mList);
-      }).catch(() => {});
-
-      pbService.fetchAllUsers(forceRefresh).then((uList) => {
-        if (uList && uList.length > 0) setAllUsersList(uList);
-      }).catch(() => {});
+      const mList = await pbService.fetchServerMembers(sId, rList).catch(() => []);
+      if (mList.length > 0) {
+        setServerMembers(mList);
+        const expandedUsers = mList
+          .map((member) => member.expand?.user)
+          .filter((user): user is User => Boolean(user?.id));
+        if (expandedUsers.length > 0) {
+          setAllUsersList((previous) => {
+            const byId = new Map(previous.map((user) => [user.id, user]));
+            expandedUsers.forEach((user) => {
+              const existing = byId.get(user.id);
+              byId.set(user.id, existing ? Object.assign({}, existing, user) : user);
+            });
+            return [...byId.values()];
+          });
+        }
+      }
     },
     [targetServerId],
   );
@@ -1885,7 +1898,12 @@ function ChatPanel({
       if (cRoles.length > 0) setServerRoles(cRoles);
       if (cUsers.length > 0) setAllUsersList(cUsers);
     }
-    loadServerMembersData(false);
+    // Give the latency-sensitive message page priority. Cached member data is
+    // already visible synchronously, and the background refresh can safely
+    // wait until the initial chat request has cleared PocketBase.
+    const memberRefreshTimer = window.setTimeout(() => {
+      loadServerMembersData(false);
+    }, isInitialLoading ? 3_000 : 2_000);
 
     const handleServerMemberUpdated = (e: any) => {
       if (!e.detail?.serverId || e.detail?.serverId === targetServerId) {
@@ -1959,8 +1977,9 @@ function ChatPanel({
       );
       unsubscribeWs();
       clearInterval(presenceTimer);
+      clearTimeout(memberRefreshTimer);
     };
-  }, [loadServerMembersData, targetServerId]);
+  }, [loadServerMembersData, targetServerId, isInitialLoading]);
 
   // Build unified server members
   const unifiedServerMembers = React.useMemo(() => {

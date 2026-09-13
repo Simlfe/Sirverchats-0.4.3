@@ -11,6 +11,7 @@ import {
   messageExpand,
   pbFileUrl,
   listDms,
+  listChannelsForUser,
   fetchMessagePage,
   createMessage,
 } from '../server.mjs';
@@ -164,6 +165,34 @@ test('public message pages request only relations present on the production sche
     );
     assert.deepEqual(page.items.map((item) => item.id), ['m2']);
     assert.equal(page.hasMore, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('loading server channels primes access for the first message page', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    requests.push(url);
+    if (url.pathname.includes('/server_members/records')) {
+      return new Response(JSON.stringify({ items: [{ id: 'member-prime', server: 's-prime', user: 'me-prime' }] }), { status: 200 });
+    }
+    if (url.pathname.includes('/channels/records')) {
+      assert.match(url.searchParams.get('filter'), /server = "s-prime"/);
+      return new Response(JSON.stringify({ items: [{ id: 'c-prime', server: 's-prime', name: 'general' }] }), { status: 200 });
+    }
+    if (url.pathname.includes('/messages/records')) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }
+    throw new Error(`unexpected PocketBase request: ${url}`);
+  };
+  try {
+    await listChannelsForUser('s-prime', 'me-prime', 'test-token');
+    await fetchMessagePage('channel', 'c-prime', new URLSearchParams({ limit: '30' }), 'test-token', 'me-prime');
+    assert.equal(requests.filter((url) => url.pathname.includes('/channels/records')).length, 1);
+    assert.equal(requests.filter((url) => url.pathname.includes('/server_members/records')).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

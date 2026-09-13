@@ -70,6 +70,19 @@ test('does not abort a healthy response while its body is being decoded', async 
   await assert.doesNotReject(client.getServers());
 });
 
+test('uses the longer bounded deadline for message history reads', async () => {
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(jsonResponse(200, { items: [], nextCursor: null, hasMore: false })), 25);
+    init?.signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  })) as typeof fetch;
+
+  const client = new ApiV2Client('https://gateway.test', 10, 1000, 50);
+  await assert.doesNotReject(client.getMessages('channel', 'channel-1'));
+});
+
 test('normalizes Cloudflare 530 and opens the short circuit', async () => {
   let calls = 0;
   globalThis.fetch = (async () => {

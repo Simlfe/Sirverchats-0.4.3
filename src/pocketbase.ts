@@ -4592,17 +4592,19 @@ class PocketBaseService {
     }
   }
 
-  async fetchServerMembers(serverId: string): Promise<ServerMember[]> {
+  async fetchServerMembers(serverId: string, knownRoles?: ServerRole[]): Promise<ServerMember[]> {
     if (this.isDemo) return [];
     try {
       const records = await this.pb.collection('server_members').getFullList({
         filter: `server = "${serverId}"`,
         expand: 'user,role'
       });
-      let serverRoles: ServerRole[] = [];
-      try {
-        serverRoles = await this.fetchServerRoles(serverId);
-      } catch (e) {}
+      let serverRoles: ServerRole[] = knownRoles || [];
+      if (!knownRoles) {
+        try {
+          serverRoles = await this.fetchServerRoles(serverId);
+        } catch (e) {}
+      }
 
       if (!this.serverMembersCache.has(serverId)) {
         this.serverMembersCache.set(serverId, new Map());
