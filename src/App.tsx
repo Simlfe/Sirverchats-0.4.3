@@ -1300,7 +1300,7 @@ export default function App() {
       loadMessages(activeChannel.id, 1, false, null, 30);
       const conversationKind = isDirectMessageChannel(activeChannel) ? 'dm' : 'channel';
       return () => {
-        apiV2Client.cancelAllMessageRequests();
+        apiV2Client.cancelMessageRequests(conversationKind, activeChannel.id);
         pbService.cancelMessagePage(activeChannel.id, conversationKind);
       };
     } else {

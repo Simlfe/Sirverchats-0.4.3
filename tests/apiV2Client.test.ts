@@ -32,6 +32,44 @@ test('coalesces identical gateway reads into one request', async () => {
   assert.equal(client.getAvailability(), 'online');
 });
 
+test('cancels only the conversation that was left', async () => {
+  const aborted: string[] = [];
+  globalThis.fetch = ((input, init) => new Promise((_resolve, reject) => {
+    const url = String(input);
+    init?.signal?.addEventListener('abort', () => {
+      aborted.push(url);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  })) as typeof fetch;
+
+  const client = new ApiV2Client('https://gateway.test', 1000, 1000);
+  const first = client.getMessages('channel', 'left');
+  const second = client.getMessages('channel', 'still-active');
+  client.cancelMessageRequests('channel', 'left');
+
+  await assert.rejects(first, (error: unknown) => error instanceof GatewayError && error.code === 'cancelled');
+  assert.equal(aborted.length, 1);
+  assert.match(aborted[0], /left/);
+  assert.equal(client.getAvailability(), 'online');
+  client.cancelMessageRequests('channel', 'still-active');
+  await assert.rejects(second, (error: unknown) => error instanceof GatewayError && error.code === 'cancelled');
+});
+
+test('does not abort a healthy response while its body is being decoded', async () => {
+  globalThis.fetch = (async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    text: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return JSON.stringify({ items: [] });
+    },
+  }) as Response) as typeof fetch;
+
+  const client = new ApiV2Client('https://gateway.test', 10, 1000);
+  await assert.doesNotReject(client.getServers());
+});
+
 test('normalizes Cloudflare 530 and opens the short circuit', async () => {
   let calls = 0;
   globalThis.fetch = (async () => {

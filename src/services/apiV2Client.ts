@@ -120,6 +120,34 @@ class ApiV2Client {
     }
   }
 
+  /**
+   * Cancel only history reads for the conversation that was left. The chat
+   * shell stays mounted while navigating, so cancelling every message read
+   * here can abort a new server/DM request that React has just started.
+   */
+  cancelMessageRequests(kind: 'channel' | 'dm', conversationId: string): void {
+    if (!conversationId) return;
+    const ids = new Set([conversationId]);
+    // DM channel ids in the React shell are prefixed to keep them distinct
+    // from public channels, while the gateway key uses the PocketBase id.
+    if (kind === 'dm' && conversationId.startsWith('dm-server-')) {
+      ids.add(conversationId.slice('dm-server-'.length));
+    }
+    const prefixes = [...ids].map((id) => `messages:${kind}:${id}:`);
+    for (const [key, request] of this.inFlight) {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) {
+        request.controller.abort();
+        this.inFlight.delete(key);
+      }
+    }
+    for (const [key, controller] of this.requestControllers) {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) {
+        controller.abort();
+        this.requestControllers.delete(key);
+      }
+    }
+  }
+
   markOnline(): void {
     this.circuitOpenUntil = 0;
     this.setAvailability('online');
@@ -272,6 +300,12 @@ class ApiV2Client {
           signal: controller.signal,
           credentials: 'omit',
         });
+
+        // The timeout is an online-read deadline for waiting on gateway
+        // headers. Do not keep aborting while a valid response body is being
+        // streamed or decoded: expanded message pages can be larger on
+        // mobile/desktop networks even when the server query is healthy.
+        clearTimeout(timeoutId);
 
         const requestId = response.headers.get('x-request-id') || undefined;
         const text = await response.text();
