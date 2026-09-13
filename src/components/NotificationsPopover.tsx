@@ -119,7 +119,7 @@ const NotificationsPopover = React.memo(function NotificationsPopover({
               exit={{ opacity: 0, scale: 0.92, y: 0 }}
               transition={{ duration: 0.2, ease: 'easeOut' }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm sm:max-w-md rounded-2xl border shadow-2xl overflow-hidden pointer-events-auto flex flex-col max-h-[80vh] max-h-[calc(100vh-32px)] z-50 bg-[var(--theme-bg-card)] border-[var(--theme-border)] text-[var(--theme-text-primary)] notifications-popover popover-menu-solid"
+              className="w-full max-w-sm sm:max-w-md rounded-2xl border shadow-2xl overflow-hidden pointer-events-auto flex flex-col max-h-[calc(100vh-5rem)] max-h-[calc(100dvh-5rem)] z-50 bg-[var(--theme-bg-card)] border-[var(--theme-border)] text-[var(--theme-text-primary)] notifications-popover popover-menu-solid"
               dir={lang === 'ar' ? 'rtl' : 'ltr'}
             >
           {/* Header */}

@@ -140,7 +140,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           top: `${menuCoords.top}px`,
           left: `${menuCoords.left}px`,
         }}
-        className="absolute w-56 max-h-[calc(100vh-24px)] overflow-y-auto overscroll-contain rounded-2xl shadow-2xl p-1.5 border border-[var(--theme-border)] bg-[var(--theme-bg-popup)] text-[var(--theme-text-primary)] z-[99999] flex flex-col gap-0.5 transition-all animate-fadeIn"
+        className="absolute w-56 max-h-[calc(100vh-24px)] max-h-[calc(100dvh-24px)] overflow-y-auto overscroll-contain rounded-2xl shadow-2xl p-1.5 border border-[var(--theme-border)] bg-[var(--theme-bg-popup)] text-[var(--theme-text-primary)] z-[99999] flex flex-col gap-0.5 transition-all animate-fadeIn"
         dir={lang === "ar" ? "rtl" : "ltr"}
         onClick={(e) => e.stopPropagation()}
       >

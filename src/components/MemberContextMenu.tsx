@@ -76,9 +76,16 @@ export default function MemberContextMenu({
     }
   };
 
-  // Clamp positioning inside viewport
-  const clampedX = Math.min(Math.max(10, x), (typeof window !== 'undefined' ? window.innerWidth : 800) - 230);
-  const clampedY = Math.min(Math.max(10, y), (typeof window !== 'undefined' ? window.innerHeight : 600) - 280);
+  // Clamp positioning inside the current viewport. Math.min(x, viewport -
+  // width) alone becomes negative on a narrow phone, which placed the menu
+  // partly off-screen; the lower bound must win when the viewport is smaller
+  // than the nominal menu size.
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 800;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 600;
+  const menuWidth = 224;
+  const menuMargin = 10;
+  const clampedX = Math.max(menuMargin, Math.min(x, Math.max(menuMargin, viewportWidth - menuWidth - menuMargin)));
+  const clampedY = Math.max(menuMargin, Math.min(y, Math.max(menuMargin, viewportHeight - 280 - menuMargin)));
 
   return (
     <>
@@ -96,7 +103,7 @@ export default function MemberContextMenu({
       />
       <div
         style={{ left: `${clampedX}px`, top: `${clampedY}px` }}
-        className="fixed z-55 w-56 rounded-2xl bg-[var(--theme-bg-popup)] border border-[var(--theme-border)] shadow-2xl p-1.5 flex flex-col gap-1 text-xs text-[var(--theme-text-primary)] animate-in fade-in zoom-in-95 duration-100 select-none isolate"
+        className="fixed z-55 w-56 max-h-[calc(100vh-20px)] max-h-[calc(100dvh-20px)] overflow-y-auto rounded-2xl bg-[var(--theme-bg-popup)] border border-[var(--theme-border)] shadow-2xl p-1.5 flex flex-col gap-1 text-xs text-[var(--theme-text-primary)] animate-in fade-in zoom-in-95 duration-100 select-none isolate"
         dir={lang === 'ar' ? 'rtl' : 'ltr'}
         onClick={(e) => e.stopPropagation()}
       >

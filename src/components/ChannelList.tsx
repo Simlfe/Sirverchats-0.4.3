@@ -520,13 +520,13 @@ function ChannelList({
 
   return (
     <div
-      className={`w-full md:w-80 h-full flex flex-col shrink-0 select-none transition-all duration-300 relative bg-[var(--theme-bg-secondary)] ${themeClasses.sidebarBg} ${
+      className={`w-full md:w-80 h-full min-w-0 min-h-0 overflow-hidden flex flex-col shrink-0 select-none transition-all duration-300 relative bg-[var(--theme-bg-secondary)] ${themeClasses.sidebarBg} ${
         lang === 'ar' ? 'border-l' : 'border-r'
       } border-[var(--theme-border)]`}
       dir={lang === 'ar' ? 'rtl' : 'ltr'}
     >
       {/* App & Server Switcher Top Bar */}
-      <div className="px-4 h-14 border-b border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] flex items-center justify-between gap-2 shrink-0">
+      <div className="px-3 sm:px-4 h-14 border-b border-[var(--theme-border)] bg-[var(--theme-bg-secondary)] flex items-center justify-between gap-2 shrink-0">
         {/* Workspace Dropdown Trigger */}
         <div className="relative flex-1 min-w-0" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
           {/* Backdrop overlay to close dropdown on click outside */}

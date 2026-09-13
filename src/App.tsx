@@ -75,6 +75,15 @@ const isDirectMessageChannel = (channel?: Partial<Channel> | null): boolean => B
 
 const MAX_ACTIVE_MESSAGES = 500;
 
+// Keep the gesture distance in sync with the CSS drawer widths. The previous
+// 50%/42% approximation made the panel stop short (or overshoot) on phones,
+// which looked like a broken alignment while swiping the navigation drawer.
+function getMobileDrawerWidth(viewportWidth: number): number {
+  return viewportWidth < 640
+    ? Math.min(viewportWidth * 0.78, 320)
+    : Math.min(viewportWidth * 0.5, 340);
+}
+
 /**
  * Keep the active React window bounded while retaining every fetched page in
  * the offline cache. Older-page loads slide the window toward the beginning
@@ -633,7 +642,7 @@ export default function App() {
         state.lastTime = Date.now();
 
         const isRtl = lang === 'ar';
-        const drawerWidth = window.innerWidth < 640 ? Math.min(window.innerWidth * 0.5, 280) : Math.min(window.innerWidth * 0.42, 340);
+        const drawerWidth = getMobileDrawerWidth(window.innerWidth);
         let translateX = 0;
 
         if (!isRtl) {
@@ -691,7 +700,7 @@ export default function App() {
       const velocityX = (endX - state.lastX) / elapsedTime;
       const totalDeltaX = endX - state.startX;
       const isRtl = lang === 'ar';
-      const drawerWidth = window.innerWidth < 640 ? Math.min(window.innerWidth * 0.5, 280) : Math.min(window.innerWidth * 0.42, 340);
+      const drawerWidth = getMobileDrawerWidth(window.innerWidth);
       const threshold = drawerWidth * 0.4;
 
       let shouldOpen = state.initialIsOpen;
@@ -3963,7 +3972,7 @@ export default function App() {
       <div id="theme-wallpaper-layer" aria-hidden="true" />
       <div
         dir={lang === 'ar' ? 'rtl' : 'ltr'}
-        className={`app-root-container h-full w-full overflow-hidden flex flex-col antialiased select-none ${themeClasses.rootBg} ${fontClass} ${sizeClass} ${animClass}`}
+        className={`app-root-container h-full w-full min-w-0 min-h-0 overflow-hidden flex flex-col antialiased select-none ${themeClasses.rootBg} ${fontClass} ${sizeClass} ${animClass}`}
       >
       <TitleBar
         appName="SirverData"
@@ -4092,7 +4101,7 @@ export default function App() {
               key="app-workspace"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="w-full h-full flex"
+              className="w-full h-full min-w-0 min-h-0 overflow-hidden flex"
             >
             {/* Unified Collaboration Sidebar Navigation */}
             {/* Desktop Static Sidebar */}
@@ -4268,7 +4277,7 @@ export default function App() {
             </AnimatePresence>
 
             {/* 3. Main Action Panel (Swaps between Mobile Settings Page, Discovery, Voice Stage, or Chat) */}
-            <div className="flex-1 flex min-w-0 w-full h-full relative">
+            <div className="flex-1 flex min-w-0 min-h-0 w-full h-full relative overflow-hidden">
               {isMobile && showSettings && currentUser ? (
                 <Suspense fallback={null}>
                   <SettingsModal
@@ -4357,7 +4366,7 @@ export default function App() {
                   />
                 </Suspense>
               ) : (activeChannel || activeServerChannel || activeDmChannel) ? (
-                <div className="flex-1 flex min-w-0 w-full h-full relative overflow-hidden">
+                <div className="flex-1 flex min-w-0 min-h-0 w-full h-full relative overflow-hidden">
                   {(() => {
                     const currentChatChannel = activeChannel || activeServerChannel || activeDmChannel;
                     if (!currentChatChannel) return null;
@@ -4588,11 +4597,16 @@ export default function App() {
 
             {/* Switch Voice Channel Confirmation Modal */}
             {pendingVoiceSwitchChannel && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 animate-in fade-in duration-200">
-                <div className="w-full max-w-md p-6 rounded-2xl border shadow-2xl bg-[var(--theme-bg-card)] border-[var(--theme-border)] text-[var(--theme-text-primary)]">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="switch-voice-channel-title"
+                className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/65 animate-in fade-in duration-200"
+              >
+                <div className="w-full max-w-md max-h-[calc(100vh-1.5rem)] max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-4 sm:p-6 rounded-2xl border shadow-2xl bg-[var(--theme-bg-card)] border-[var(--theme-border)] text-[var(--theme-text-primary)]">
                   <div className="flex items-center gap-3 mb-4 text-amber-500">
                     <Volume2 className="w-6 h-6 animate-pulse" />
-                    <h3 className="text-lg font-bold">
+                    <h3 id="switch-voice-channel-title" className="text-lg font-bold">
                       {lang === 'ar' ? 'تبديل القناة الصوتية؟' : 'Switch Voice Channel?'}
                     </h3>
                   </div>

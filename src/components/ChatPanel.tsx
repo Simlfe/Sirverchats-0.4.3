@@ -181,6 +181,14 @@ export const MESSAGE_GROUPING_WINDOW_MS = 5 * 60 * 1000;
 const VIRTUAL_MAX_ITEMS = 100;
 const VIRTUAL_OVERSCAN = 24;
 
+function getMobileMemberDrawerWidth(viewportWidth: number): number {
+  // Match the drawer's w-[78vw]/sm:w-[50vw] CSS exactly so drag progress and
+  // the final snap never leave a visible gap beside the chat panel.
+  return viewportWidth < 640
+    ? Math.min(viewportWidth * 0.78, 320)
+    : Math.min(viewportWidth * 0.5, 340);
+}
+
 function getSenderId(msg?: Message | null): string {
   if (!msg) return "";
   return (
@@ -1512,6 +1520,23 @@ function ChatPanel({
   useEffect(() => {
     if (isDesktop || isDmChannel) return;
 
+    // On mobile the member drawer is controlled by the overlay state machine;
+    // `showMemberList` reflects the persisted desktop preference and can be
+    // false while the mobile drawer is visibly open. Use the rendered state
+    // for edge-vs-surface gesture hit testing so close swipes work reliably.
+    const memberDrawerIsOpen = isDesktop ? showMemberList : activeOverlay === "members";
+
+    let dragRaf: number | null = null;
+    let pendingDragState: { isDragging: boolean; dragX: number; opacity: number } | null = null;
+    const scheduleDragState = (next: { isDragging: boolean; dragX: number; opacity: number }) => {
+      pendingDragState = next;
+      if (dragRaf !== null) return;
+      dragRaf = window.requestAnimationFrame(() => {
+        dragRaf = null;
+        if (pendingDragState) setMemberListDragState(pendingDragState);
+      });
+    };
+
     const handleTouchStart = (e: TouchEvent) => {
       if (window.innerWidth >= 768) return;
       if (e.touches.length !== 1) return;
@@ -1524,7 +1549,7 @@ function ChatPanel({
 
       let isTriggerable = false;
 
-      if (!showMemberList) {
+      if (!memberDrawerIsOpen) {
         if (isRtl) {
           if (startX <= edgeThreshold) isTriggerable = true;
         } else {
@@ -1541,7 +1566,7 @@ function ChatPanel({
           lastX: startX,
           lastTime: Date.now(),
           axis: null,
-          initialIsOpen: showMemberList,
+          initialIsOpen: memberDrawerIsOpen,
           active: true,
         };
         window.addEventListener("touchmove", handleTouchMove, { passive: false });
@@ -1580,6 +1605,31 @@ function ChatPanel({
         if (e.cancelable) e.preventDefault();
         state.lastX = touch.clientX;
         state.lastTime = Date.now();
+
+        const isRtl = lang === "ar";
+        const drawerWidth = getMobileMemberDrawerWidth(window.innerWidth);
+        let translateX = 0;
+
+        // The member drawer is anchored to the right in LTR and to the left
+        // in RTL. Use the same pixel geometry as the CSS width while dragging.
+        if (!isRtl) {
+          if (!state.initialIsOpen) {
+            const dragDelta = Math.min(0, Math.max(-drawerWidth, deltaX));
+            translateX = drawerWidth + dragDelta;
+          } else {
+            translateX = Math.min(drawerWidth, Math.max(0, deltaX));
+          }
+        } else if (!state.initialIsOpen) {
+          const dragDelta = Math.max(0, Math.min(drawerWidth, deltaX));
+          translateX = -drawerWidth + dragDelta;
+        } else {
+          translateX = Math.max(-drawerWidth, Math.min(0, deltaX));
+        }
+
+        const opacity = !isRtl
+          ? Math.max(0, Math.min(1, (drawerWidth - translateX) / drawerWidth))
+          : Math.max(0, Math.min(1, (drawerWidth + translateX) / drawerWidth));
+        scheduleDragState({ isDragging: true, dragX: translateX, opacity });
       }
     };
 
@@ -1594,6 +1644,7 @@ function ChatPanel({
       memberListTouchRef.current = null;
 
       if (state.axis !== "horizontal") {
+        scheduleDragState({ isDragging: false, dragX: 0, opacity: 0 });
         return;
       }
 
@@ -1623,17 +1674,19 @@ function ChatPanel({
       if (shouldOpen !== state.initialIsOpen) {
         toggleOverlay("members");
       }
+      scheduleDragState({ isDragging: false, dragX: 0, opacity: 0 });
     };
 
     window.addEventListener("touchstart", handleTouchStart, { passive: true });
 
     return () => {
+      if (dragRaf !== null) window.cancelAnimationFrame(dragRaf);
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleTouchEnd);
       window.removeEventListener("touchcancel", handleTouchEnd);
     };
-  }, [showMemberList, isDesktop, isDmChannel, lang]);
+  }, [showMemberList, activeOverlay, isDesktop, isDmChannel, lang]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -4579,7 +4632,7 @@ function ChatPanel({
       )}
       {/* Header Topic Banner with Deletion options */}
       <div
-        className={`sticky top-0 z-30 px-4 h-14 flex items-center justify-between shrink-0 select-none gap-1.5 border-b border-[var(--theme-border)] ${headerBgClass}`}
+        className={`sticky top-0 z-30 px-2 sm:px-4 h-14 flex items-center justify-between shrink-0 select-none gap-1 border-b border-[var(--theme-border)] overflow-hidden ${headerBgClass}`}
       >
         <div className="min-w-0 flex-1 flex items-center gap-2">
           {onToggleSidebar && (
@@ -4616,7 +4669,7 @@ function ChatPanel({
                 </div>
               )}
               <span
-                className={`font-extrabold text-xs sm:text-base truncate min-w-0 max-w-[110px] xs:max-w-[180px] sm:max-w-none ${textPrimaryClass}`}
+                className={`font-extrabold text-xs sm:text-base truncate min-w-0 max-w-[72px] xs:max-w-[150px] sm:max-w-none ${textPrimaryClass}`}
               >
                 {channel.name.startsWith("@")
                   ? channel.name
@@ -4625,7 +4678,7 @@ function ChatPanel({
             </div>
           ) : (
             <span
-              className={`font-extrabold text-xs sm:text-base truncate min-w-0 max-w-[110px] xs:max-w-[180px] sm:max-w-none ${textPrimaryClass}`}
+              className={`font-extrabold text-xs sm:text-base truncate min-w-0 max-w-[72px] xs:max-w-[150px] sm:max-w-none ${textPrimaryClass}`}
             >
               #{channel.name}
             </span>
@@ -4730,7 +4783,7 @@ function ChatPanel({
                 value={channelSearchQuery}
                 onChange={(e) => setChannelSearchQuery(e.target.value)}
                 placeholder={lang === "ar" ? "بحث..." : "Search..."}
-                className="w-12 xs:w-20 sm:w-32 focus:w-24 sm:focus:w-48 transition-all bg-transparent border-0 outline-none text-xs font-medium text-[var(--theme-text-primary)] placeholder-[var(--theme-text-muted)]"
+                className="w-8 xs:w-20 sm:w-32 focus:w-20 sm:focus:w-48 transition-all bg-transparent border-0 outline-none text-xs font-medium text-[var(--theme-text-primary)] placeholder-[var(--theme-text-muted)]"
               />
               {channelSearchQuery && (
                 <button
@@ -4879,7 +4932,7 @@ function ChatPanel({
             style={{
               overflowAnchor: "auto",
             }}
-            className={`flex-1 overflow-y-auto p-6 flex flex-col gap-0 transition-opacity duration-200 ease-out chat-scroll-container opacity-100 ${
+            className={`flex-1 overflow-y-auto p-3 sm:p-6 flex flex-col gap-0 transition-opacity duration-200 ease-out chat-scroll-container opacity-100 ${
               chatSettings?.showScrollInChats
                 ? "scrollbar-thin"
                 : "scrollbar-none"
@@ -6804,7 +6857,7 @@ function ChatPanel({
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 15 }}
-                className="mx-6 mb-2 p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl flex items-center justify-between text-xs text-amber-500 select-none font-bold"
+                className="mx-3 sm:mx-6 mb-2 p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl flex items-center justify-between gap-2 text-xs text-amber-500 select-none font-bold"
               >
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-500 animate-bounce" />
@@ -6824,7 +6877,7 @@ function ChatPanel({
           {/* Reply To focus card indicator */}
           {replyTo && (
             <div
-              className={`mx-6 mb-2.5 p-3 rounded-xl border flex items-center justify-between text-xs select-none ${isLight ? "bg-slate-100 border-slate-200 text-slate-700" : "bg-slate-900/60 border-slate-800 text-slate-300"}`}
+              className={`mx-3 sm:mx-6 mb-2.5 p-3 rounded-xl border flex items-center justify-between gap-2 text-xs select-none ${isLight ? "bg-slate-100 border-slate-200 text-slate-700" : "bg-slate-900/60 border-slate-800 text-slate-300"}`}
             >
               <div className="flex items-center gap-2 truncate">
                 <span className="font-bold text-accent">
@@ -7836,7 +7889,7 @@ function ChatPanel({
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="fixed inset-0 w-screen h-screen w-[100vw] h-[100vh] bg-black/80 z-[99999] flex flex-col select-none p-4 text-[var(--theme-text-primary)]"
+                    className="fixed inset-0 bg-black/80 z-[99999] flex flex-col select-none p-3 sm:p-4 text-[var(--theme-text-primary)]"
                   >
                     <div className="flex items-center justify-between px-4 py-2">
                       <span className="text-xs font-bold text-[var(--theme-text-secondary)] font-mono">
@@ -8098,16 +8151,16 @@ function ChatPanel({
         </AnimatePresence>
         {/* Mobile Slide-Over Member Drawer */}
         <AnimatePresence>
-          {(isDesktop ? showMemberList : activeOverlay === "members") &&
+          {(isDesktop ? showMemberList : activeOverlay === "members" || memberListDragState.isDragging) &&
             !isDesktop &&
             displayServer && (
               <>
                 {/* Backdrop Overlay */}
                 <motion.div
                   initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
+                  animate={{ opacity: memberListDragState.isDragging ? memberListDragState.opacity : 1 }}
                   exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15, ease: "easeOut" }}
+                  transition={{ duration: memberListDragState.isDragging ? 0 : 0.15, ease: "easeOut" }}
                   onClick={handleCloseAllOverlays}
                   className="md:hidden fixed inset-0 bg-black/60 z-[70] pointer-events-auto"
                 />
@@ -8115,7 +8168,7 @@ function ChatPanel({
                 {/* Mobile Slide-Over Panel */}
                 <motion.div
                   initial={{ x: lang === "ar" ? "-100%" : "100%" }}
-                  animate={{ x: 0 }}
+                  animate={{ x: memberListDragState.isDragging ? memberListDragState.dragX : 0 }}
                   exit={{ x: lang === "ar" ? "-100%" : "100%" }}
                   transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                   style={{ willChange: "transform" }}
@@ -8158,7 +8211,7 @@ function ChatPanel({
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                 onClick={() => setGridGalleryList(null)}
-                className="fixed inset-0 w-screen h-screen w-[100vw] h-[100vh] bg-black/40 backdrop-blur-sm z-[99998] flex items-center justify-center p-4 select-none"
+                className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[99998] flex items-center justify-center p-3 sm:p-4 select-none"
               >
                 <motion.div
                   key="grid-gallery-modal-card"

@@ -497,21 +497,25 @@ export const MessageReactionPicker: React.FC<MessageReactionPickerProps> = ({
 
   if (!anchorRect || typeof document === "undefined") return null;
 
-  // Stable viewport positioning geometry
-  const pickerWidth = 310;
-  const pickerHeight = 350;
+  // Keep the picker inside narrow phone and split-screen viewports. The old
+  // fixed 310x350 geometry could produce negative top/left coordinates when
+  // the keyboard reduced the visual viewport, clipping the search field and
+  // the last row of reactions.
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const margin = 12;
+  const pickerWidth = Math.min(310, Math.max(0, vw - margin * 2));
+  const pickerHeight = Math.min(350, Math.max(0, vh - margin * 2));
 
   // Vertical placement: default to placing below unless space is cramped and there is more room above
   const spaceBelow = vh - anchorRect.bottom;
   const spaceAbove = anchorRect.top;
   const placeAbove = spaceBelow < pickerHeight + margin && spaceAbove > spaceBelow;
 
+  const maxTop = Math.max(margin, vh - pickerHeight - margin);
   const topPos = placeAbove
-    ? Math.max(margin, anchorRect.top - pickerHeight - 6)
-    : Math.min(vh - pickerHeight - margin, anchorRect.bottom + 6);
+    ? Math.max(margin, Math.min(maxTop, anchorRect.top - pickerHeight - 6))
+    : Math.max(margin, Math.min(maxTop, anchorRect.bottom + 6));
 
   // Horizontal placement: smoothly align with trigger anchor without jumping across screen
   const anchorCenter = anchorRect.left + anchorRect.width / 2;
@@ -525,7 +529,8 @@ export const MessageReactionPicker: React.FC<MessageReactionPickerProps> = ({
   }
 
   // Strictly clamp within viewport boundaries
-  leftPos = Math.max(margin, Math.min(leftPos, vw - pickerWidth - margin));
+  const maxLeft = Math.max(margin, vw - pickerWidth - margin);
+  leftPos = Math.max(margin, Math.min(leftPos, maxLeft));
 
   const handleEmojiClick = (emoji: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -556,9 +561,10 @@ export const MessageReactionPicker: React.FC<MessageReactionPickerProps> = ({
           top: `${topPos}px`,
           left: `${leftPos}px`,
           width: `${pickerWidth}px`,
+          maxHeight: `${pickerHeight}px`,
         }}
         onClick={(e) => e.stopPropagation()}
-        className={`absolute rounded-2xl border shadow-2xl overflow-hidden p-2.5 flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-150 ${
+        className={`absolute rounded-2xl border shadow-2xl overflow-y-auto overscroll-contain p-2.5 flex flex-col gap-2 select-none animate-in fade-in zoom-in-95 duration-150 ${
           isLight
             ? "bg-white border-slate-200 text-slate-800 shadow-slate-300/70"
             : "bg-slate-950 border-slate-800 text-slate-100 shadow-black/90"
@@ -635,7 +641,7 @@ export const MessageReactionPicker: React.FC<MessageReactionPickerProps> = ({
         )}
 
         {/* Emoji Grid */}
-        <div className="grid grid-cols-7 gap-1 max-h-44 overflow-y-auto p-1 scrollbar-thin">
+        <div className="grid grid-cols-6 sm:grid-cols-7 gap-1 max-h-44 overflow-y-auto p-1 scrollbar-thin">
           {filteredEmojis.map((emoji, i) => (
             <button
               key={`grid-emoji-${emoji}-${i}`}

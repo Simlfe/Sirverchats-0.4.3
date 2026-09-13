@@ -16,6 +16,7 @@ This document details the centralized theme system implemented across the **Sirv
 - **CSS Variables & Global Styles**: `/src/index.css`
   - Defines CSS custom variables for dark/light modes (`--theme-bg-primary`, `--theme-bg-secondary`, `--theme-text-primary`, etc.).
   - Includes glassmorphism and material utility classes (`.glass-panel`, `.glass-card`, `.avocado-glow`).
+  - Defines the `xs` (30rem) responsive breakpoint used by compact phone controls and keeps fixed drawers/modal surfaces inside mobile safe areas.
 - **Theme Switcher Component**: `/src/components/ThemeToggle.tsx`
   - A reusable toggle control featuring smooth spring animations and theme status indicators.
 

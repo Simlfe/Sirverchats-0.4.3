@@ -1,5 +1,21 @@
 # Sirver Application Changelog
 
+## [Unreleased] - 2026-09-13
+### UI alignment and mobile viewport hardening
+- Added the missing Tailwind `xs` breakpoint so compact phone controls, chat
+  headers, and media-player layouts use their intended responsive rules.
+- Hardened flex-shell sizing with `min-width`/`min-height` constraints to stop
+  long channel names, feeds, and drawers from forcing horizontal or vertical
+  overflow.
+- Synced navigation/member drawer swipe geometry with their CSS widths and
+  added frame-coalesced member-drawer dragging for a smooth, gap-free snap.
+- Made chat headers and feed padding responsive on narrow screens, and kept
+  fixed drawers, popovers, context menus, galleries, and search dialogs within
+  dynamic mobile viewport and safe-area bounds.
+- Added deterministic media preview sizing and responsive reaction-picker
+  placement to avoid collapsed cards and clipped controls while media or the
+  mobile keyboard is active.
+
 ## [Unreleased] - 2026-09-12
 ### React/Tauri UI restoration
 - Restored the optimized React UI as the production Cloudflare Pages build for

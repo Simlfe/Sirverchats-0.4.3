@@ -151,17 +151,22 @@ export default function AdvancedSearchModal({
   }, [query, targetChannelId, searchScope, filterUser, filterBefore, filterAfter, filterHas, currentChannel.id, serverChannels, cachedMessages]);
 
   return (
-    <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="advanced-search-title"
+      className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
+    >
       <div
-        className="w-full max-w-3xl bg-[var(--theme-bg-secondary)] border border-[var(--theme-border)] rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] text-[var(--theme-text-primary)] animate-in zoom-in-95 duration-150"
+        className="w-full max-w-3xl min-w-0 bg-[var(--theme-bg-secondary)] border border-[var(--theme-border)] rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100vh-1rem)] max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100vh-2rem)] sm:max-h-[calc(100dvh-2rem)] text-[var(--theme-text-primary)] animate-in zoom-in-95 duration-150"
         dir={lang === 'ar' ? 'rtl' : 'ltr'}
       >
         {/* Header with Search Input */}
-        <div className="p-4 border-b border-[var(--theme-border)] flex flex-col gap-3 bg-[var(--theme-bg-primary)]/80">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+        <div className="p-3 sm:p-4 border-b border-[var(--theme-border)] flex flex-col gap-3 shrink-0 bg-[var(--theme-bg-primary)]/80">
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
               <Search className="w-5 h-5 text-accent" />
-              <h2 className="text-sm font-black uppercase tracking-wider text-[var(--theme-text-primary)]">
+              <h2 id="advanced-search-title" className="text-sm font-black uppercase tracking-wider text-[var(--theme-text-primary)] truncate">
                 {lang === 'ar' ? 'البحث المتقدم والفلاتر' : 'Advanced Search & Filters'}
               </h2>
             </div>
@@ -276,7 +281,7 @@ export default function AdvancedSearchModal({
         </div>
 
         {/* Results List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2.5 hover-scrollbar min-h-[300px]">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 space-y-2.5 hover-scrollbar">
           {searchError && (
             <div className="mb-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
               {searchError}
@@ -313,15 +318,15 @@ export default function AdvancedSearchModal({
                   }}
                   className="p-3 rounded-2xl bg-[var(--theme-bg-primary)] border border-[var(--theme-border)] hover:border-accent/60 hover:bg-[var(--theme-bg-tertiary)] transition-all cursor-pointer flex flex-col gap-1.5 group"
                 >
-                  <div className="flex items-center justify-between text-xs text-[var(--theme-text-muted)]">
-                    <div className="flex items-center gap-2 font-bold">
-                      <span className="text-[var(--theme-text-primary)] font-extrabold">{senderName}</span>
-                      {sender?.username && <span className="text-[10px] text-[var(--theme-text-muted)]">@{sender.username}</span>}
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--theme-bg-secondary)] border border-[var(--theme-border)] text-accent font-mono">
+                  <div className="flex items-start justify-between gap-2 text-xs text-[var(--theme-text-muted)] min-w-0">
+                    <div className="flex items-center gap-2 min-w-0 flex-wrap font-bold">
+                      <span className="text-[var(--theme-text-primary)] font-extrabold max-w-[42%] truncate">{senderName}</span>
+                      {sender?.username && <span className="text-[10px] text-[var(--theme-text-muted)] max-w-[35%] truncate">@{sender.username}</span>}
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--theme-bg-secondary)] border border-[var(--theme-border)] text-accent font-mono max-w-[42%] truncate">
                         #{matchedChan.name}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono text-[var(--theme-text-muted)]">
+                    <span className="shrink-0 whitespace-nowrap text-right text-[10px] font-mono text-[var(--theme-text-muted)]">
                       {new Date(msg.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
@@ -332,7 +337,7 @@ export default function AdvancedSearchModal({
 
                   <div className="flex items-center justify-end gap-1 text-[10px] text-accent opacity-0 group-hover:opacity-100 transition-opacity font-bold">
                     <span>{lang === 'ar' ? 'الانتقال إلى الرسالة' : 'Jump to message'}</span>
-                    <ArrowRight className="w-3 h-3" />
+                    <ArrowRight className={`w-3 h-3 ${lang === 'ar' ? 'rotate-180' : ''}`} />
                   </div>
                 </div>
               );
