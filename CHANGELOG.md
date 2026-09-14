@@ -1,6 +1,14 @@
 # Sirver Application Changelog
 
 ## [Unreleased] - 2026-09-13
+### Production source handover
+- Disabled automatic web deployment from the legacy `0.4.3` branch so future
+  legacy pushes cannot overwrite the replacement application.
+- Added a controlled production workflow that clean-builds
+  `Simlfe/sirverchats-3.9`, publishes it to the existing `sirverchats`
+  Cloudflare Pages project, purges the custom-domain cache, and verifies the
+  exact source revision through a deployed version marker.
+
 ### UI alignment and mobile viewport hardening
 - Added the missing Tailwind `xs` breakpoint so compact phone controls, chat
   headers, and media-player layouts use their intended responsive rules.

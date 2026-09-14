@@ -1,0 +1,88 @@
+name: Deploy sirverchats-3.9 to production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build stable source and publish app.sirverdata.top
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout stable repository
+        run: git clone --depth 1 --branch main https://github.com/Simlfe/sirverchats-3.9.git stable-source
+
+      - name: Record stable source revision
+        id: source
+        working-directory: stable-source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: stable-source/package-lock.json
+
+      - name: Install dependencies
+        working-directory: stable-source
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: stable-source
+        run: npm run lint
+
+      - name: Build production web app
+        working-directory: stable-source
+        run: npm run build
+
+      - name: Add production source marker
+        working-directory: stable-source
+        shell: bash
+        run: printf '%s\n' '${{ steps.source.outputs.sha }}' > dist/source-version.txt
+
+      - name: Validate Cloudflare credentials
+        shell: bash
+        run: |
+          test -n "${CLOUDFLARE_API_TOKEN}" || { echo 'Missing CLOUDFLARE_API_TOKEN' >&2; exit 1; }
+          test -n "${CLOUDFLARE_ACCOUNT_ID}" || { echo 'Missing CLOUDFLARE_ACCOUNT_ID' >&2; exit 1; }
+
+      - name: Publish stable source to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy stable-source/dist --project-name=sirverchats
+
+      - name: Purge production hostname cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H 'Content-Type: application/json')
+          zone_id="$(curl -fsS 'https://api.cloudflare.com/client/v4/zones?name=sirverdata.top&status=active' "${auth[@]}" | jq -r '.result[0].id // empty')"
+          test -n "${zone_id}" || { echo 'sirverdata.top zone was not found' >&2; exit 1; }
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/${zone_id}/purge_cache" \
+            "${auth[@]}" --data '{"hosts":["app.sirverdata.top"]}' >/tmp/cache-purge.json
+
+      - name: Verify exact production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ steps.source.outputs.sha }}'
+          for attempt in $(seq 1 18); do
+            actual="$(curl --retry 2 --retry-all-errors -fsS "https://app.sirverdata.top/source-version.txt?run=${GITHUB_RUN_ID}-${attempt}" || true)"
+            html="$(curl --retry 2 --retry-all-errors -fsS "https://app.sirverdata.top/?run=${GITHUB_RUN_ID}-${attempt}" || true)"
+            if [ "${actual}" = "${expected}" ] && printf '%s' "${html}" | grep -q 'assets/index-'; then
+              echo "app.sirverdata.top is serving sirverchats-3.9 revision ${expected}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Production did not serve expected revision ${expected}; last marker was ${actual}" >&2
+          exit 1
