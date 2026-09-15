@@ -13,6 +13,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      VITE_ENABLE_API_V2_BOOTSTRAP: 'true'
+      VITE_API_V2_URL: https://chat.sirverdata.top/api/v2
     steps:
       - name: Checkout stable repository
         run: git clone --depth 1 --branch main https://github.com/Simlfe/sirverchats-3.9.git stable-source
